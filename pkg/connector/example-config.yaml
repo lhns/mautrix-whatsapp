@@ -20,6 +20,21 @@ proxy_only_login: false
 # {{.FullName}}      - Name you set in the contacts list
 displayname_template: '{{or .BusinessName .PushName .Phone .RedactedPhone "Unknown user"}} (WA)'
 
+# Name template for direct chat rooms, taking the same variables as displayname_template.
+# Only applies when bridge.private_chat_portal_meta is true, which is the master switch for
+# DM room metadata:
+#   portal_meta true,  template set    -> room is named by this template
+#   portal_meta true,  template unset  -> room is named after the ghost user (default)
+#   portal_meta false                  -> room gets no name, whatever this is set to
+#
+# Unlike displayname_template this is safe to build from {{.FullName}} on a multi-user
+# instance: a DM portal belongs to one login while the ghost is shared by all of them, so a
+# contact name here cannot leak to another user of the bridge.
+#
+# Note a contact resync updates the ghost first, so a room not yet named by this template
+# can take the ghost's name for a moment before the template name replaces it.
+dm_room_name_template: ''
+
 # Should incoming calls send a message to the Matrix room?
 call_start_notices: true
 # Should another user's cryptographic identity changing send a message to Matrix?

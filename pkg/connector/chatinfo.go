@@ -183,6 +183,11 @@ func (wa *WhatsAppClient) wrapDMInfo(ctx context.Context, jid types.JID) *bridge
 	if jid.Server == types.BotServer {
 		info.Topic = ptr.Ptr(BotChatTopic)
 	}
+	if ShouldSetDMRoomName(wa.Main.Config.DMRoomNameTemplate, wa.Main.Bridge.Config.PrivateChatPortalMeta) && !wa.IsOwnJID(jid) {
+		if name := wa.dmRoomName(ctx, jid); name != "" {
+			info.Name = ptr.Ptr(name)
+		}
+	}
 	if wa.IsOwnJID(jid) {
 		// For chats with self, force-split the members so the user's own ghost is always in the room.
 		info.Members.MemberMap = map[networkid.UserID]bridgev2.ChatMember{
@@ -254,6 +259,23 @@ func setTopicID(id, topic string) bridgev2.ExtraUpdater[*bridgev2.Portal] {
 		}
 		return false
 	}
+}
+
+// dmRoomName renders dm_room_name_template for a contact, or "" if the contact cannot be
+// read.
+func (wa *WhatsAppClient) dmRoomName(ctx context.Context, jid types.JID) string {
+	contact, err := wa.GetStore().Contacts.GetContact(ctx, jid)
+	if err != nil {
+		zerolog.Ctx(ctx).Err(err).Stringer("jid", jid).Msg("Failed to get contact info for DM room name")
+		return ""
+	}
+	resolved, phone := wa.resolveContact(ctx, jid, contact)
+	name, err := wa.Main.Config.formatDMRoomName(jid, phone, resolved)
+	if err != nil {
+		zerolog.Ctx(ctx).Err(err).Stringer("jid", jid).Msg("Failed to format DM room name")
+		return ""
+	}
+	return name
 }
 
 func (wa *WhatsAppClient) wrapGroupInfo(ctx context.Context, info *types.GroupInfo) *bridgev2.ChatInfo {
