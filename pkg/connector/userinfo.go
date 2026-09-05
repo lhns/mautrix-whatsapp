@@ -192,7 +192,10 @@ func (wa *WhatsAppClient) getUserInfo(ctx context.Context, jid types.JID, avatar
 	return wa.contactToUserInfo(ctx, jid, contact, avatarID, fetchAvatar), nil
 }
 
-func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, contact types.ContactInfo, avatarID string, fetchAvatar bool) *bridgev2.UserInfo {
+// resolveContact merges in what the alternate (LID or phone number) identity knows about a
+// contact and derives the phone number, so a contact recorded under only one of the two
+// identities still resolves.
+func (wa *WhatsAppClient) resolveContact(ctx context.Context, jid types.JID, contact types.ContactInfo) (types.ContactInfo, string) {
 	if jid == types.MetaAIJID && contact.PushName == jid.User {
 		contact.PushName = "Meta AI"
 	} else if jid == types.LegacyPSAJID || jid == types.PSAJID {
@@ -260,6 +263,11 @@ func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, 
 	} else if altJID.Server == types.DefaultUserServer {
 		phone = "+" + altJID.User
 	}
+	return contact, phone
+}
+
+func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, contact types.ContactInfo, avatarID string, fetchAvatar bool) *bridgev2.UserInfo {
+	contact, phone := wa.resolveContact(ctx, jid, contact)
 	ui := &bridgev2.UserInfo{
 		Name:         ptr.Ptr(wa.Main.Config.FormatDisplayname(jid, phone, contact)),
 		IsBot:        ptr.Ptr(jid.IsBot()),
@@ -434,7 +442,42 @@ func (wa *WhatsAppClient) resyncContacts(forceAvatarSync, automatic bool) {
 			userInfo := wa.contactToUserInfo(ctx, jid, contact, "", forceAvatarSync || ghost.AvatarID == "")
 			ghost.UpdateInfo(ctx, userInfo)
 			wa.syncAltGhostWithInfo(ctx, jid, userInfo)
+			wa.updateDMPortalNames(ctx, jid)
 		}
+	}
+}
+
+// updateDMPortalNames applies dm_room_name_template to a contact's existing DM rooms.
+//
+// The caller updates the ghost first, and bridgev2 renames DM rooms from the ghost as soon
+// as its name changes, so this has to run in the same pass rather than being queued.
+func (wa *WhatsAppClient) updateDMPortalNames(ctx context.Context, jid types.JID) {
+	if !ShouldSetDMRoomName(wa.Main.Config.DMRoomNameTemplate, wa.Main.Bridge.Config.PrivateChatPortalMeta) {
+		return
+	}
+	name := wa.dmRoomName(ctx, jid)
+	if name == "" {
+		return
+	}
+	// After the LID migration a contact's portal may be keyed under either the phone number
+	// or the LID, so both are looked up.
+	userIDs := []networkid.UserID{waid.MakeUserID(jid)}
+	if altJID, err := wa.GetStore().GetAltJID(ctx, jid); err == nil && !altJID.IsEmpty() {
+		if altID := waid.MakeUserID(altJID); altID != "" && altID != userIDs[0] {
+			userIDs = append(userIDs, altID)
+		}
+	}
+	for _, userID := range userIDs {
+		portal, err := wa.Main.Bridge.GetDMPortal(ctx, wa.UserLogin.ID, userID)
+		if err != nil {
+			zerolog.Ctx(ctx).Err(err).Str("user_id", string(userID)).Msg("Failed to get DM portal to name")
+			continue
+		} else if portal == nil {
+			continue
+		}
+		// The source stays nil: UpdateInfo runs source.MarkInPortal for a non-nil source,
+		// which joins that login's double puppet to the room.
+		portal.UpdateInfo(ctx, &bridgev2.ChatInfo{Name: &name}, nil, nil, time.Time{})
 	}
 }
 

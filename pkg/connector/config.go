@@ -34,6 +34,7 @@ type Config struct {
 	ProxyOnlyLogin bool   `yaml:"proxy_only_login"`
 
 	DisplaynameTemplate string `yaml:"displayname_template"`
+	DMRoomNameTemplate  string `yaml:"dm_room_name_template"`
 
 	CallStartNotices            bool          `yaml:"call_start_notices"`
 	IdentityChangeNotices       bool          `yaml:"identity_change_notices"`
@@ -78,6 +79,7 @@ type Config struct {
 	} `yaml:"history_sync"`
 
 	displaynameTemplate *template.Template `yaml:"-"`
+	dmRoomNameTemplate  *template.Template `yaml:"-"`
 }
 
 type umConfig Config
@@ -101,6 +103,14 @@ func (c *Config) PostProcess() error {
 	if err != nil {
 		return fmt.Errorf("failed to execute displayname template: %w", err)
 	}
+	c.dmRoomNameTemplate, err = template.New("dmroomname").Parse(c.DMRoomNameTemplate)
+	if err != nil {
+		return err
+	}
+	_, err = c.formatDMRoomName(types.PSAJID, "", types.ContactInfo{})
+	if err != nil {
+		return fmt.Errorf("failed to execute DM room name template: %w", err)
+	}
 	return nil
 }
 
@@ -113,6 +123,7 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Bool, "proxy_only_login")
 
 	helper.Copy(up.Str, "displayname_template")
+	helper.Copy(up.Str, "dm_room_name_template")
 
 	helper.Copy(up.Bool, "call_start_notices")
 	helper.Copy(up.Bool, "identity_change_notices")
@@ -164,7 +175,21 @@ type DisplaynameParams struct {
 	Short  string
 }
 
+// ShouldSetDMRoomName reports whether the connector supplies a DM room name: only when a
+// template is set and private_chat_portal_meta allows DM rooms metadata at all.
+func ShouldSetDMRoomName(dmRoomNameTemplate string, privateChatPortalMeta bool) bool {
+	return dmRoomNameTemplate != "" && privateChatPortalMeta
+}
+
 func (c *Config) formatDisplayname(jid types.JID, phone string, contact types.ContactInfo) (string, error) {
+	return c.execNameTemplate(c.displaynameTemplate, jid, phone, contact)
+}
+
+func (c *Config) formatDMRoomName(jid types.JID, phone string, contact types.ContactInfo) (string, error) {
+	return c.execNameTemplate(c.dmRoomNameTemplate, jid, phone, contact)
+}
+
+func (c *Config) execNameTemplate(tmpl *template.Template, jid types.JID, phone string, contact types.ContactInfo) (string, error) {
 	var nameBuf strings.Builder
 	if phone == "" && jid.Server == types.DefaultUserServer {
 		phone = "+" + jid.User
@@ -172,7 +197,7 @@ func (c *Config) formatDisplayname(jid types.JID, phone string, contact types.Co
 	if contact.RedactedPhone == "" && phone != "" {
 		contact.RedactedPhone = redactPhone(phone)
 	}
-	err := c.displaynameTemplate.Execute(&nameBuf, &DisplaynameParams{
+	err := tmpl.Execute(&nameBuf, &DisplaynameParams{
 		ContactInfo: contact,
 		Phone:       phone,
 
