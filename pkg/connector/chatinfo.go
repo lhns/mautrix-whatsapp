@@ -278,6 +278,24 @@ func (wa *WhatsAppClient) dmRoomName(ctx context.Context, jid types.JID) string 
 	return name
 }
 
+// memberNickname renders member_nickname_template for a contact, or "" if the contact cannot
+// be read. Empty leaves ChatMember.Nickname nil, so bridgev2 leaves the member event's
+// displayname alone.
+func (wa *WhatsAppClient) memberNickname(ctx context.Context, jid types.JID) string {
+	contact, err := wa.GetStore().Contacts.GetContact(ctx, jid)
+	if err != nil {
+		zerolog.Ctx(ctx).Err(err).Stringer("jid", jid).Msg("Failed to get contact info for member nickname")
+		return ""
+	}
+	resolved, phone := wa.resolveContact(ctx, jid, contact)
+	name, err := wa.Main.Config.formatMemberNickname(jid, phone, resolved)
+	if err != nil {
+		zerolog.Ctx(ctx).Err(err).Stringer("jid", jid).Msg("Failed to format member nickname")
+		return ""
+	}
+	return name
+}
+
 func (wa *WhatsAppClient) wrapGroupInfo(ctx context.Context, info *types.GroupInfo) *bridgev2.ChatInfo {
 	sendEventPL := defaultPL
 	if info.IsAnnounce && !info.IsDefaultSubGroup {
@@ -325,6 +343,7 @@ func (wa *WhatsAppClient) wrapGroupInfo(ctx context.Context, info *types.GroupIn
 		ExtraUpdates: extraUpdater,
 	}
 	var hasSelf bool
+	setNicknames := ShouldSetMemberNickname(wa.Main.Config.MemberNicknameTemplate)
 	for _, pcp := range info.Participants {
 		member := bridgev2.ChatMember{
 			EventSender: wa.makeEventSender(ctx, pcp.JID),
@@ -332,6 +351,10 @@ func (wa *WhatsAppClient) wrapGroupInfo(ctx context.Context, info *types.GroupIn
 		}
 		if member.EventSender.IsFromMe {
 			hasSelf = true
+		} else if setNicknames {
+			if nickname := wa.memberNickname(ctx, pcp.JID); nickname != "" {
+				member.Nickname = &nickname
+			}
 		}
 		if pcp.IsSuperAdmin {
 			member.PowerLevel = ptr.Ptr(superAdminPL)

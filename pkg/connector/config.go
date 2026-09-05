@@ -33,8 +33,9 @@ type Config struct {
 	GetProxyURL    string `yaml:"get_proxy_url"`
 	ProxyOnlyLogin bool   `yaml:"proxy_only_login"`
 
-	DisplaynameTemplate string `yaml:"displayname_template"`
-	DMRoomNameTemplate  string `yaml:"dm_room_name_template"`
+	DisplaynameTemplate    string `yaml:"displayname_template"`
+	DMRoomNameTemplate     string `yaml:"dm_room_name_template"`
+	MemberNicknameTemplate string `yaml:"member_nickname_template"`
 
 	CallStartNotices            bool          `yaml:"call_start_notices"`
 	IdentityChangeNotices       bool          `yaml:"identity_change_notices"`
@@ -78,8 +79,9 @@ type Config struct {
 		BackwardsOnDemand bool `yaml:"backwards_on_demand"`
 	} `yaml:"history_sync"`
 
-	displaynameTemplate *template.Template `yaml:"-"`
-	dmRoomNameTemplate  *template.Template `yaml:"-"`
+	displaynameTemplate    *template.Template `yaml:"-"`
+	dmRoomNameTemplate     *template.Template `yaml:"-"`
+	memberNicknameTemplate *template.Template `yaml:"-"`
 }
 
 type umConfig Config
@@ -111,6 +113,14 @@ func (c *Config) PostProcess() error {
 	if err != nil {
 		return fmt.Errorf("failed to execute DM room name template: %w", err)
 	}
+	c.memberNicknameTemplate, err = template.New("membernickname").Parse(c.MemberNicknameTemplate)
+	if err != nil {
+		return err
+	}
+	_, err = c.formatMemberNickname(types.PSAJID, "", types.ContactInfo{})
+	if err != nil {
+		return fmt.Errorf("failed to execute member nickname template: %w", err)
+	}
 	return nil
 }
 
@@ -124,6 +134,7 @@ func upgradeConfig(helper up.Helper) {
 
 	helper.Copy(up.Str, "displayname_template")
 	helper.Copy(up.Str, "dm_room_name_template")
+	helper.Copy(up.Str, "member_nickname_template")
 
 	helper.Copy(up.Bool, "call_start_notices")
 	helper.Copy(up.Bool, "identity_change_notices")
@@ -187,6 +198,18 @@ func (c *Config) formatDisplayname(jid types.JID, phone string, contact types.Co
 
 func (c *Config) formatDMRoomName(jid types.JID, phone string, contact types.ContactInfo) (string, error) {
 	return c.execNameTemplate(c.dmRoomNameTemplate, jid, phone, contact)
+}
+
+// ShouldSetMemberNickname reports whether the connector supplies per-room member nicknames.
+//
+// Separate from dm_room_name_template because it names people rather than rooms, and it only
+// has an effect in group portals: a DM room's member list is not what the name is read from.
+func ShouldSetMemberNickname(memberNicknameTemplate string) bool {
+	return memberNicknameTemplate != ""
+}
+
+func (c *Config) formatMemberNickname(jid types.JID, phone string, contact types.ContactInfo) (string, error) {
+	return c.execNameTemplate(c.memberNicknameTemplate, jid, phone, contact)
 }
 
 func (c *Config) execNameTemplate(tmpl *template.Template, jid types.JID, phone string, contact types.ContactInfo) (string, error) {

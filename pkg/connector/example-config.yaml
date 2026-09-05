@@ -35,6 +35,18 @@ displayname_template: '{{or .BusinessName .PushName .Phone .RedactedPhone "Unkno
 # can take the ghost's name for a moment before the template name replaces it.
 dm_room_name_template: ''
 
+# Template for a ghost's displayname inside a group room's own member event, which lets group
+# members carry your contact names while the shared ghost profile stays contact-independent.
+# Same fields as displayname_template. Empty disables it and leaves member events alone.
+#
+# Only the login that owns a portal's names may set them (the receiver, or the lowest login ID
+# in a shared portal), so two logins in one group cannot overwrite each other. A member event
+# holds one displayname, so in a group both of you are in, everyone sees the owning login's
+# contact names, not their own.
+#
+# Requires a mautrix-go that implements ChatMember.Nickname.
+member_nickname_template: ''
+
 # Should incoming calls send a message to the Matrix room?
 call_start_notices: true
 # Should another user's cryptographic identity changing send a message to Matrix?
