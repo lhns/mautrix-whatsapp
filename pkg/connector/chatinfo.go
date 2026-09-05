@@ -273,7 +273,7 @@ func (wa *WhatsAppClient) wrapGroupInfo(ctx context.Context, info *types.GroupIn
 	)
 	syncAllMembers := wa.Main.Config.MaxMemberSync < 0 || len(info.Participants) < wa.Main.Config.MaxMemberSync
 	wrapped := &bridgev2.ChatInfo{
-		Name:  ptr.Ptr(info.Name),
+		Name:  ptr.Ptr(wa.groupRoomName(ctx, info.JID, info.Name)),
 		Topic: ptr.Ptr(info.Topic),
 		Members: &bridgev2.ChatMemberList{
 			IsFull:           !info.IsIncognito && !info.IsParent && syncAllMembers,
@@ -351,12 +351,23 @@ func (wa *WhatsAppClient) wrapGroupInfo(ctx context.Context, info *types.GroupIn
 	return wrapped
 }
 
+// groupRoomName renders group_room_name_template for a group subject, falling back to the
+// subject itself if the template cannot be executed.
+func (wa *WhatsAppClient) groupRoomName(ctx context.Context, jid types.JID, name string) string {
+	rendered, err := wa.Main.Config.formatGroupRoomName(jid, name)
+	if err != nil {
+		zerolog.Ctx(ctx).Err(err).Stringer("jid", jid).Msg("Failed to format group room name")
+		return name
+	}
+	return rendered
+}
+
 func (wa *WhatsAppClient) wrapGroupInfoChange(ctx context.Context, evt *events.GroupInfo) *bridgev2.ChatInfoChange {
 	var changes *bridgev2.ChatInfo
 	if evt.Name != nil || evt.Topic != nil || evt.Ephemeral != nil || evt.Unlink != nil || evt.Link != nil {
 		changes = &bridgev2.ChatInfo{}
 		if evt.Name != nil {
-			changes.Name = &evt.Name.Name
+			changes.Name = ptr.Ptr(wa.groupRoomName(ctx, evt.JID, evt.Name.Name))
 		}
 		if evt.Topic != nil {
 			changes.Topic = &evt.Topic.Topic

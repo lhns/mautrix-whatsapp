@@ -20,6 +20,14 @@ proxy_only_login: false
 # {{.FullName}}      - Name you set in the contacts list
 displayname_template: '{{or .BusinessName .PushName .Phone .RedactedPhone "Unknown user"}} (WA)'
 
+# Template for group room names. Available fields are .Name, the group subject as WhatsApp
+# has it, and .JID. Empty uses the subject unchanged, which is the stock behaviour.
+#
+# Setting this makes the Matrix room name bridge-generated, so renaming the room from Matrix
+# is refused rather than written back: sending the rendered name to WhatsApp would store it
+# as the group subject and render it again on the next sync.
+group_room_name_template: ''
+
 # Should incoming calls send a message to the Matrix room?
 call_start_notices: true
 # Should another user's cryptographic identity changing send a message to Matrix?

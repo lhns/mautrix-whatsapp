@@ -473,6 +473,11 @@ func (wa *WhatsAppClient) HandleMatrixRoomName(ctx context.Context, msg *bridgev
 	if msg.Portal.RoomType == database.RoomTypeDM {
 		return false, fmt.Errorf("cannot set room name for DM")
 	}
+	// The Matrix name is rendered from group_room_name_template, so sending it back would
+	// store the rendered name as the WhatsApp group subject and then render that again.
+	if ShouldSetGroupRoomName(wa.Main.Config.GroupRoomNameTemplate) {
+		return false, fmt.Errorf("cannot set group name while group_room_name_template is set")
+	}
 
 	defer wa.mcTrack(msg, time.Now(), &retErr)
 	err = wa.Client.SetGroupName(ctx, portalJID, msg.Content.Name)
