@@ -189,10 +189,31 @@ func (wa *WhatsAppClient) getUserInfo(ctx context.Context, jid types.JID, avatar
 	if err != nil {
 		return nil, err
 	}
-	return wa.contactToUserInfo(ctx, jid, contact, avatarID, fetchAvatar), nil
+	ui, _ := wa.contactToUserInfo(ctx, jid, contact, avatarID, fetchAvatar)
+	return ui, nil
 }
 
-func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, contact types.ContactInfo, avatarID string, fetchAvatar bool) *bridgev2.UserInfo {
+// clearNameFields removes every ContactInfo field that can carry a name, leaving the phone
+// number fallbacks. RedactedPhone stays: it is a phone number, not a name.
+func clearNameFields(contact types.ContactInfo) types.ContactInfo {
+	contact.FirstName = ""
+	contact.FullName = ""
+	contact.PushName = ""
+	contact.BusinessName = ""
+	return contact
+}
+
+// contactNamesGhost reports whether the displayname template built the name out of the contact
+// rather than out of the phone number fallbacks. Rendering twice, once with the name fields
+// cleared, answers that without assuming which fields a given template reads.
+func (c *Config) contactNamesGhost(jid types.JID, phone string, contact types.ContactInfo) bool {
+	return c.FormatDisplayname(jid, phone, contact) !=
+		c.FormatDisplayname(jid, phone, clearNameFields(contact))
+}
+
+// The second return value reports whether the name came out of the contact rather than out of
+// the phone number fallbacks, which is only decidable here, after the alternate JID is merged in.
+func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, contact types.ContactInfo, avatarID string, fetchAvatar bool) (*bridgev2.UserInfo, bool) {
 	if jid == types.MetaAIJID && contact.PushName == jid.User {
 		contact.PushName = "Meta AI"
 	} else if jid == types.LegacyPSAJID || jid == types.PSAJID {
@@ -275,7 +296,7 @@ func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, 
 	} else if fetchAvatar {
 		ui.ExtraUpdates = bridgev2.MergeExtraUpdaters(ui.ExtraUpdates, wa.fetchGhostAvatar)
 	}
-	return ui
+	return ui, wa.Main.Config.contactNamesGhost(jid, phone, contact)
 }
 
 func updateGhostLastSyncAt(_ context.Context, ghost *bridgev2.Ghost) bool {
@@ -400,6 +421,52 @@ func (wa *WhatsAppClient) fetchGhostAvatar(ctx context.Context, ghost *bridgev2.
 	return ghost.UpdateAvatar(ctx, wrappedAvatar)
 }
 
+// fillMissingContactFields fills the fields this login has not learned from another login's
+// view of the same contact. Only empty fields are filled: a value this login already holds is
+// the one it heard most recently, so it wins.
+func fillMissingContactFields(contact, other types.ContactInfo) types.ContactInfo {
+	if contact.PushName == "" {
+		contact.PushName = other.PushName
+	}
+	if contact.BusinessName == "" {
+		contact.BusinessName = other.BusinessName
+	}
+	return contact
+}
+
+// fillContactFromOtherLogins asks every other login on this bridge what it knows about a contact.
+//
+// A push name and a business name are set by the contact themselves, so they are the same for
+// every login; only the knowledge of them is per login, because whatsmeow learns push names from
+// received messages rather than from the address book sync. Empty never means "cleared" -- the
+// message path stores a name only when it is non-empty -- so an absent field is always "not
+// learned here" and is safe to fill in from elsewhere.
+//
+// Without this, a freshly linked login holds a full address book and almost no push names, and
+// since ghosts are bridge-global it renames every shared ghost down to the phone fallback.
+func (wa *WhatsAppClient) fillContactFromOtherLogins(
+	ctx context.Context, jid types.JID, contact types.ContactInfo,
+) types.ContactInfo {
+	for _, login := range wa.Main.Bridge.GetAllCachedUserLogins() {
+		if contact.PushName != "" && contact.BusinessName != "" {
+			break
+		}
+		other, ok := login.Client.(*WhatsAppClient)
+		// Don't use GetStore: it logs a warning for a login that isn't connected.
+		if !ok || login.ID == wa.UserLogin.ID || other.Client == nil || other.Client.Store == nil {
+			continue
+		}
+		otherContact, err := other.Client.Store.Contacts.GetContact(ctx, jid)
+		if err != nil {
+			zerolog.Ctx(ctx).Debug().Err(err).Stringer("jid", jid).
+				Str("other_login", string(login.ID)).Msg("Failed to read contact from another login")
+			continue
+		}
+		contact = fillMissingContactFields(contact, otherContact)
+	}
+	return contact
+}
+
 func (wa *WhatsAppClient) resyncContacts(forceAvatarSync, automatic bool) {
 	log := wa.UserLogin.Log.With().Str("action", "resync contacts").Logger()
 	ctx := log.WithContext(wa.Main.Bridge.BackgroundCtx)
@@ -431,7 +498,16 @@ func (wa *WhatsAppClient) resyncContacts(forceAvatarSync, automatic bool) {
 		} else if contact, err := contactStore.GetContact(ctx, jid); err != nil {
 			log.Err(err).Stringer("jid", jid).Msg("Failed to get contact info")
 		} else {
-			userInfo := wa.contactToUserInfo(ctx, jid, contact, "", forceAvatarSync || ghost.AvatarID == "")
+			contact = wa.fillContactFromOtherLogins(ctx, jid, contact)
+			userInfo, named := wa.contactToUserInfo(ctx, jid, contact, "", forceAvatarSync || ghost.AvatarID == "")
+			// Nobody could name this contact, so the name is the phone number fallback and writing
+			// it would only replace a name some other source established. An unnamed ghost still
+			// takes the fallback over no name at all.
+			if !named && ghost.Name != "" {
+				log.Debug().Stringer("jid", jid).
+					Msg("Skipping ghost update: no login knows a name the template can use")
+				continue
+			}
 			ghost.UpdateInfo(ctx, userInfo)
 			wa.syncAltGhostWithInfo(ctx, jid, userInfo)
 		}
