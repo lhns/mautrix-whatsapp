@@ -66,9 +66,9 @@ func fnAccept(ce *commands.Event) {
 		ce.Reply("You can't accept your own invites")
 	} else if login := ce.Bridge.GetCachedUserLoginByID(ce.Portal.Receiver); login == nil {
 		ce.Reply("Login not found")
-	} else if !login.Client.IsLoggedIn() {
+	} else if cli := login.Client.(*WhatsAppClient).getClient(); cli == nil || !cli.IsLoggedIn() {
 		ce.Reply("Not logged in")
-	} else if err = login.Client.(*WhatsAppClient).Client.JoinGroupWithInvite(ce.Ctx, meta.JID, meta.Inviter, meta.Code, meta.Expiration); err != nil {
+	} else if err = cli.JoinGroupWithInvite(ce.Ctx, meta.JID, meta.Inviter, meta.Code, meta.Expiration); err != nil {
 		ce.Log.Err(err).Msg("Failed to accept group invite")
 		ce.Reply("Failed to accept group invite: %v", err)
 	} else {
@@ -117,7 +117,7 @@ func fnSync(ce *commands.Event) {
 		})
 		ce.React("✅")
 	case "groups":
-		groups, err := wa.Client.GetJoinedGroups(ce.Ctx)
+		groups, err := wa.getClient().GetJoinedGroups(ce.Ctx)
 		if err != nil {
 			ce.Reply("Failed to get joined groups: %v", err)
 			return
@@ -157,7 +157,7 @@ func fnSync(ce *commands.Event) {
 			})
 		}
 		for _, name := range names {
-			err := wa.Client.FetchAppState(ce.Ctx, name, true, false)
+			err := wa.getClient().FetchAppState(ce.Ctx, name, true, false)
 			if errors.Is(err, appstate.ErrKeyNotFound) {
 				ce.Reply("Key not found error syncing app state %s: %v\n\nKey requests are sent automatically, and the sync should happen in the background after your phone responds.", name, err)
 				return
@@ -204,7 +204,7 @@ func fnInviteLink(ce *commands.Event) {
 		ce.Reply("Can't get invite link to private chat")
 	} else if portalJID.IsBroadcastList() {
 		ce.Reply("Can't get invite link to broadcast list")
-	} else if link, err := wa.Client.GetGroupInviteLink(ce.Ctx, portalJID, reset); err != nil {
+	} else if link, err := wa.getClient().GetGroupInviteLink(ce.Ctx, portalJID, reset); err != nil {
 		ce.Reply("Failed to get invite link: %v", err)
 	} else {
 		ce.Reply(link)
@@ -234,14 +234,14 @@ func fnResolveLink(ce *commands.Event) {
 	}
 	wa := login.Client.(*WhatsAppClient)
 	if strings.HasPrefix(ce.Args[0], whatsmeow.InviteLinkPrefix) {
-		group, err := wa.Client.GetGroupInfoFromLink(ce.Ctx, ce.Args[0])
+		group, err := wa.getClient().GetGroupInfoFromLink(ce.Ctx, ce.Args[0])
 		if err != nil {
 			ce.Reply("Failed to get group info: %v", err)
 			return
 		}
 		ce.Reply("That invite link points at %s (`%s`)", group.Name, group.JID)
 	} else if strings.HasPrefix(ce.Args[0], whatsmeow.BusinessMessageLinkPrefix) || strings.HasPrefix(ce.Args[0], whatsmeow.BusinessMessageLinkDirectPrefix) {
-		target, err := wa.Client.ResolveBusinessMessageLink(ce.Ctx, ce.Args[0])
+		target, err := wa.getClient().ResolveBusinessMessageLink(ce.Ctx, ce.Args[0])
 		if err != nil {
 			ce.Reply("Failed to get business info: %v", err)
 			return
@@ -256,7 +256,7 @@ func fnResolveLink(ce *commands.Event) {
 		}
 		ce.Reply("That link points at %s (+%s).%s", target.PushName, target.JID.User, message)
 	} else if strings.HasPrefix(ce.Args[0], whatsmeow.ContactQRLinkPrefix) || strings.HasPrefix(ce.Args[0], whatsmeow.ContactQRLinkDirectPrefix) {
-		target, err := wa.Client.ResolveContactQRLink(ce.Ctx, ce.Args[0])
+		target, err := wa.getClient().ResolveContactQRLink(ce.Ctx, ce.Args[0])
 		if err != nil {
 			ce.Reply("Failed to get contact info: %v", err)
 			return
@@ -295,7 +295,7 @@ func fnJoin(ce *commands.Event) {
 	wa := login.Client.(*WhatsAppClient)
 
 	if strings.HasPrefix(ce.Args[0], whatsmeow.InviteLinkPrefix) {
-		jid, err := wa.Client.JoinGroupWithLink(ce.Ctx, ce.Args[0])
+		jid, err := wa.getClient().JoinGroupWithLink(ce.Ctx, ce.Args[0])
 		if err != nil {
 			ce.Reply("Failed to join group: %v", err)
 			return
@@ -303,12 +303,12 @@ func fnJoin(ce *commands.Event) {
 		ce.Log.Debug().Stringer("group_jid", jid).Msg("User successfully joined WhatsApp group with link")
 		ce.Reply("Successfully joined group `%s`, the portal should be created momentarily", jid)
 	} else if strings.HasPrefix(ce.Args[0], whatsmeow.NewsletterLinkPrefix) {
-		info, err := wa.Client.GetNewsletterInfoWithInvite(ce.Ctx, ce.Args[0])
+		info, err := wa.getClient().GetNewsletterInfoWithInvite(ce.Ctx, ce.Args[0])
 		if err != nil {
 			ce.Reply("Failed to get channel info: %v", err)
 			return
 		}
-		err = wa.Client.FollowNewsletter(ce.Ctx, info.ID)
+		err = wa.getClient().FollowNewsletter(ce.Ctx, info.ID)
 		if err != nil {
 			ce.Reply("Failed to follow channel: %v", err)
 			return

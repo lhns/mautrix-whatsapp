@@ -83,11 +83,11 @@ func (wa *WhatsAppClient) validateIdentifer(ctx context.Context, number string) 
 	}
 	if looksEmaily(number) {
 		return types.EmptyJID, ErrInputLooksLikeEmail
-	} else if wa.Client == nil || !wa.Client.IsLoggedIn() {
+	} else if cli := wa.getClient(); cli == nil || !cli.IsLoggedIn() {
 		return types.EmptyJID, bridgev2.ErrNotLoggedIn
 	} else if entry, ok := isOnWhatsappCache.Get(number); ok && time.Since(entry.ts) < 4*time.Hour {
 		return entry.jid, nil
-	} else if resp, err := wa.Client.IsOnWhatsApp(ctx, []string{number}); err != nil {
+	} else if resp, err := cli.IsOnWhatsApp(ctx, []string{number}); err != nil {
 		return types.EmptyJID, fmt.Errorf("failed to check if number is on WhatsApp: %w", err)
 	} else if len(resp) == 0 {
 		return types.EmptyJID, fmt.Errorf("the server did not respond to the query")
@@ -126,7 +126,7 @@ func (wa *WhatsAppClient) startChatPNToLID(ctx context.Context, jid types.JID) (
 		if err != nil {
 			return jid, fmt.Errorf("failed to get lid for phone number: %w", err)
 		} else if lid.IsEmpty() {
-			resp, err := wa.Client.GetUserInfo(ctx, []types.JID{jid})
+			resp, err := wa.getClient().GetUserInfo(ctx, []types.JID{jid})
 			if err != nil {
 				return jid, fmt.Errorf("failed to get user info for phone number: %w", err)
 			} else if info, ok := resp[jid]; !ok {
@@ -290,7 +290,7 @@ func (wa *WhatsAppClient) CreateGroup(ctx context.Context, params *bridgev2.Grou
 			return nil, err
 		}
 	}
-	resp, err := wa.Client.CreateGroup(ctx, req)
+	resp, err := wa.getClient().CreateGroup(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create group: %w", err)
 	}
@@ -362,7 +362,7 @@ func (wa *WhatsAppClient) CreateGroup(ctx context.Context, params *bridgev2.Grou
 	}
 	changed := false
 	if avatarBytes != nil {
-		avatarID, err := wa.Client.SetGroupPhoto(ctx, resp.JID, avatarBytes)
+		avatarID, err := wa.getClient().SetGroupPhoto(ctx, resp.JID, avatarBytes)
 		if err != nil {
 			zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to set group avatar after creating group")
 		} else {
@@ -379,8 +379,8 @@ func (wa *WhatsAppClient) CreateGroup(ctx context.Context, params *bridgev2.Grou
 		}
 	}
 	if params.Topic != nil {
-		newTopicID := wa.Client.GenerateMessageID()
-		err = wa.Client.SetGroupTopic(ctx, resp.JID, "", newTopicID, params.Topic.Topic)
+		newTopicID := wa.getClient().GenerateMessageID()
+		err = wa.getClient().SetGroupTopic(ctx, resp.JID, "", newTopicID, params.Topic.Topic)
 		if err != nil {
 			zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to set group topic after creating group")
 		} else {

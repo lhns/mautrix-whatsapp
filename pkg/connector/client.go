@@ -75,19 +75,20 @@ func (wa *WhatsAppConnector) LoadUserLogin(ctx context.Context, login *bridgev2.
 
 	if w.Device != nil {
 		log := w.UserLogin.Log.With().Str("component", "whatsmeow").Logger()
-		w.Client = whatsmeow.NewClient(w.Device, waLog.Zerolog(log))
-		w.Client.AddEventHandlerWithSuccessStatus(w.handleWAEvent)
-		w.Client.SynchronousAck = true
-		w.Client.EnableDecryptedEventBuffer = wa.Bridge.Config.PortalEventBuffer == 0
-		w.Client.ManualHistorySyncDownload = true
-		w.Client.SendReportingTokens = true
-		w.Client.AutomaticMessageRerequestFromPhone = true
-		w.Client.GetMessageForRetry = w.trackNotFoundRetry
-		w.Client.PreRetryCallback = w.trackFoundRetry
-		w.Client.BackgroundEventCtx = w.UserLogin.Log.WithContext(wa.Bridge.BackgroundCtx)
-		w.Client.SetForceActiveDeliveryReceipts(wa.Config.ForceActiveDeliveryReceipts)
-		w.Client.InitialAutoReconnect = wa.Config.InitialAutoReconnect
-		w.Client.UseRetryMessageStore = wa.Config.UseWhatsAppRetryStore
+		cli := whatsmeow.NewClient(w.Device, waLog.Zerolog(log))
+		cli.AddEventHandlerWithSuccessStatus(w.handleWAEvent)
+		cli.SynchronousAck = true
+		cli.EnableDecryptedEventBuffer = wa.Bridge.Config.PortalEventBuffer == 0
+		cli.ManualHistorySyncDownload = true
+		cli.SendReportingTokens = true
+		cli.AutomaticMessageRerequestFromPhone = true
+		cli.GetMessageForRetry = w.trackNotFoundRetry
+		cli.PreRetryCallback = w.trackFoundRetry
+		cli.BackgroundEventCtx = w.UserLogin.Log.WithContext(wa.Bridge.BackgroundCtx)
+		cli.SetForceActiveDeliveryReceipts(wa.Config.ForceActiveDeliveryReceipts)
+		cli.InitialAutoReconnect = wa.Config.InitialAutoReconnect
+		cli.UseRetryMessageStore = wa.Config.UseWhatsAppRetryStore
+		w.client.Store(cli)
 	} else {
 		w.UserLogin.Log.Warn().Stringer("jid", w.JID).Msg("No device found for user in whatsmeow store")
 	}
@@ -103,12 +104,14 @@ type resyncQueueItem struct {
 type WhatsAppClient struct {
 	Main      *WhatsAppConnector
 	UserLogin *bridgev2.UserLogin
-	Client    *whatsmeow.Client
 	Device    *store.Device
 	JID       types.JID
 	LID       types.JID
 	MC        mClient
 
+	// client is read from many goroutines, including other logins' event
+	// handlers. Load it once into a local: it can go nil at any point.
+	client             atomic.Pointer[whatsmeow.Client]
 	historySyncWakeup  chan struct{}
 	stopLoops          atomic.Pointer[context.CancelFunc]
 	resyncQueue        map[types.JID]resyncQueueItem
@@ -149,7 +152,8 @@ func (wa *WhatsAppClient) GetPushConfigs() *bridgev2.PushConfig {
 }
 
 func (wa *WhatsAppClient) RegisterPushNotifications(ctx context.Context, pushType bridgev2.PushType, token string) error {
-	if wa.Client == nil {
+	cli := wa.getClient()
+	if cli == nil {
 		return bridgev2.ErrNotLoggedIn
 	}
 	var pc whatsmeow.PushConfig
@@ -186,7 +190,7 @@ func (wa *WhatsAppClient) RegisterPushNotifications(ctx context.Context, pushTyp
 	default:
 		return fmt.Errorf("unsupported push type %s", pushType)
 	}
-	return wa.Client.RegisterForPushNotifications(ctx, pc)
+	return cli.RegisterForPushNotifications(ctx, pc)
 }
 
 func (wa *WhatsAppClient) IsThisUser(_ context.Context, userID networkid.UserID) bool {
@@ -206,7 +210,8 @@ func (wa *WhatsAppClient) GetLID() types.JID {
 }
 
 func (wa *WhatsAppClient) Connect(ctx context.Context) {
-	if wa.Client == nil {
+	cli := wa.getClient()
+	if cli == nil {
 		state := status.BridgeState{
 			StateEvent: status.StateBadCredentials,
 			Error:      WANotLoggedIn,
@@ -216,7 +221,7 @@ func (wa *WhatsAppClient) Connect(ctx context.Context) {
 	}
 	wa.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: status.StateConnecting})
 	wa.Main.firstClientConnectOnce.Do(wa.Main.onFirstClientConnect)
-	if err := wa.Main.updateProxy(ctx, wa.Client, false); err != nil {
+	if err := wa.Main.updateProxy(ctx, cli, false); err != nil {
 		zerolog.Ctx(ctx).Err(err).Msg("Failed to update proxy")
 	}
 	if ctx.Err() != nil {
@@ -224,9 +229,9 @@ func (wa *WhatsAppClient) Connect(ctx context.Context) {
 	}
 	wa.initMC()
 	wa.startLoops()
-	wa.Client.BackgroundEventCtx = wa.UserLogin.Log.WithContext(wa.Main.Bridge.BackgroundCtx)
+	cli.BackgroundEventCtx = wa.UserLogin.Log.WithContext(wa.Main.Bridge.BackgroundCtx)
 	zerolog.Ctx(ctx).Debug().Msg("Connecting to WhatsApp")
-	if err := wa.Client.ConnectContext(ctx); err != nil {
+	if err := cli.ConnectContext(ctx); err != nil {
 		wa.callStopLoops()
 		zerolog.Ctx(ctx).Err(err).Msg("Failed to connect to WhatsApp")
 		state := status.BridgeState{
@@ -266,28 +271,27 @@ type wrappedPushNotificationData struct {
 }
 
 func (wa *WhatsAppClient) ConnectBackground(ctx context.Context, params *bridgev2.ConnectBackgroundParams) error {
-	if wa.Client == nil {
+	cli := wa.getClient()
+	if cli == nil {
 		return bridgev2.ErrNotLoggedIn
 	}
-	wa.Client.BackgroundEventCtx = wa.UserLogin.Log.WithContext(wa.Main.Bridge.BackgroundCtx)
+	cli.BackgroundEventCtx = wa.UserLogin.Log.WithContext(wa.Main.Bridge.BackgroundCtx)
 	ch := make(chan error, 1)
 	wa.offlineSyncWaiter.Store(&ch)
 	defer wa.offlineSyncWaiter.Store(nil)
 	wa.Main.backgroundConnectOnce.Do(wa.Main.onFirstBackgroundConnect)
-	if err := wa.Main.updateProxy(ctx, wa.Client, false); err != nil {
+	if err := wa.Main.updateProxy(ctx, cli, false); err != nil {
 		zerolog.Ctx(ctx).Err(err).Msg("Failed to update proxy")
 	}
-	wa.Client.GetClientPayload = func() *waWa6.ClientPayload {
+	cli.GetClientPayload = func() *waWa6.ClientPayload {
 		payload := wa.GetStore().GetClientPayload()
 		payload.ConnectReason = waWa6.ClientPayload_PUSH.Enum()
 		return payload
 	}
 	defer func() {
-		if cli := wa.Client; cli != nil {
-			cli.GetClientPayload = nil
-		}
+		cli.GetClientPayload = nil
 	}()
-	err := wa.Client.ConnectContext(ctx)
+	err := cli.ConnectContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -312,7 +316,7 @@ func (wa *WhatsAppClient) ConnectBackground(ctx context.Context, params *bridgev
 
 func (wa *WhatsAppClient) sendPNData(ctx context.Context, pn string) error {
 	//lint:ignore SA1019 this is supposed to be dangerous
-	resp, err := wa.Client.DangerousInternals().SendIQ(ctx, whatsmeow.DangerousInfoQuery{
+	resp, err := wa.getClient().DangerousInternals().SendIQ(ctx, whatsmeow.DangerousInfoQuery{
 		Namespace: "urn:xmpp:whatsapp:push",
 		Type:      "get",
 		To:        types.ServerJID,
@@ -334,7 +338,7 @@ func (wa *WhatsAppClient) sendPNData(ctx context.Context, pn string) error {
 	}
 	zerolog.Ctx(ctx).Debug().Str("cat_data", string(catContentBytes)).Msg("Received cat response from sending pn data")
 	//lint:ignore SA1019 this is supposed to be dangerous
-	err = wa.Client.DangerousInternals().SendNode(ctx, waBinary.Node{
+	err = wa.getClient().DangerousInternals().SendNode(ctx, waBinary.Node{
 		Tag: "ib",
 		Content: []waBinary.Node{{
 			Tag:     "cat",
@@ -362,8 +366,12 @@ func (wa *WhatsAppClient) startLoops() {
 	}
 }
 
+func (wa *WhatsAppClient) getClient() *whatsmeow.Client {
+	return wa.client.Load()
+}
+
 func (wa *WhatsAppClient) GetStore() *store.Device {
-	if cli := wa.Client; cli != nil {
+	if cli := wa.getClient(); cli != nil {
 		if currentStore := cli.Store; currentStore != nil {
 			return currentStore
 		}
@@ -380,20 +388,20 @@ func (wa *WhatsAppClient) callStopLoops() {
 
 func (wa *WhatsAppClient) Disconnect() {
 	wa.callStopLoops()
-	if cli := wa.Client; cli != nil {
+	if cli := wa.getClient(); cli != nil {
 		cli.Disconnect()
 	}
 }
 
 func (wa *WhatsAppClient) LogoutRemote(ctx context.Context) {
-	if cli := wa.Client; cli != nil {
+	if cli := wa.getClient(); cli != nil {
 		err := cli.Logout(ctx)
 		if err != nil {
 			zerolog.Ctx(ctx).Err(err).Msg("Failed to log out")
 		}
 	}
 	wa.Disconnect()
-	wa.Client = nil
+	wa.client.Store(nil)
 	err := wa.Main.DB.Conversation.DeleteAll(ctx, wa.UserLogin.ID)
 	if err != nil {
 		zerolog.Ctx(ctx).Err(err).Msg("Failed to delete history sync data on logout")
@@ -401,7 +409,8 @@ func (wa *WhatsAppClient) LogoutRemote(ctx context.Context) {
 }
 
 func (wa *WhatsAppClient) IsLoggedIn() bool {
-	return wa.Client != nil && wa.Client.IsLoggedIn()
+	cli := wa.getClient()
+	return cli != nil && cli.IsLoggedIn()
 }
 
 func (wa *WhatsAppClient) syncRemoteProfile(ctx context.Context, ghost *bridgev2.Ghost) {
@@ -433,7 +442,7 @@ func (wa *WhatsAppClient) syncRemoteProfile(ctx context.Context, ghost *bridgev2
 		zerolog.Ctx(ctx).Err(err).Msg("Failed to save remote profile")
 	}
 	// FIXME this might be racy, should invent a proper way to send last state with info filled
-	if wa.Client.IsConnected() {
+	if wa.getClient().IsConnected() {
 		wa.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: status.StateConnected})
 	}
 	zerolog.Ctx(ctx).Info().Msg("Remote profile updated")
@@ -484,7 +493,7 @@ func (wa *WhatsAppClient) HandleMatrixViewingChat(ctx context.Context, msg *brid
 }
 
 func (wa *WhatsAppClient) updatePresence(ctx context.Context, presence types.Presence) error {
-	err := wa.Client.SendPresence(ctx, presence)
+	err := wa.getClient().SendPresence(ctx, presence)
 	if err == nil {
 		wa.lastPresence = presence
 	}
@@ -492,7 +501,7 @@ func (wa *WhatsAppClient) updatePresence(ctx context.Context, presence types.Pre
 }
 
 func (wa *WhatsAppClient) DownloadImagePack(ctx context.Context, url string) (*bridgev2.ImportedImagePack, error) {
-	return wa.Main.MsgConv.DownloadImagePack(ctx, wa.UserLogin.ID, wa.Client, url)
+	return wa.Main.MsgConv.DownloadImagePack(ctx, wa.UserLogin.ID, wa.getClient(), url)
 }
 
 func (wa *WhatsAppClient) ListImagePacks(ctx context.Context) ([]*event.ImagePackMetadata, error) {

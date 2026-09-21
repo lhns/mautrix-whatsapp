@@ -82,7 +82,8 @@ func (wa *WhatsAppConnector) downloadAvatarDirectMedia(ctx context.Context, pars
 		return nil, fmt.Errorf("%w: user login %s not found", bridgev2.ErrNotLoggedIn, parsedID.UserLogin)
 	}
 	waClient := ul.Client.(*WhatsAppClient)
-	if waClient.Client == nil {
+	cli := waClient.getClient()
+	if cli == nil {
 		return nil, fmt.Errorf("no WhatsApp client found on login %s", parsedID.UserLogin)
 	}
 	waClient.avatarLock.Lock(parsedID.Avatar.TargetJID)
@@ -97,7 +98,7 @@ func (wa *WhatsAppConnector) downloadAvatarDirectMedia(ctx context.Context, pars
 		zerolog.Ctx(ctx).Debug().
 			Str("avatar_id", parsedID.Avatar.AvatarID).
 			Msg("Refreshing avatar URL from WhatsApp servers")
-		avatar, err := waClient.Client.GetProfilePictureInfo(ctx, parsedID.Avatar.TargetJID, &whatsmeow.GetProfilePictureParams{
+		avatar, err := cli.GetProfilePictureInfo(ctx, parsedID.Avatar.TargetJID, &whatsmeow.GetProfilePictureParams{
 			IsCommunity: parsedID.Avatar.Community,
 		})
 		if errors.Is(err, whatsmeow.ErrProfilePictureNotSet) ||
@@ -148,7 +149,7 @@ func (wa *WhatsAppConnector) downloadAvatarDirectMedia(ctx context.Context, pars
 	}
 	return &mediaproxy.GetMediaResponseFile{
 		Callback: func(w *os.File) (*mediaproxy.FileMeta, error) {
-			return &mediaproxy.FileMeta{}, waClient.Client.DownloadMediaWithOnlyPathToFile(ctx, cachedInfo.DirectPath, w)
+			return &mediaproxy.FileMeta{}, cli.DownloadMediaWithOnlyPathToFile(ctx, cachedInfo.DirectPath, w)
 		},
 	}, nil
 }
@@ -159,10 +160,11 @@ func (wa *WhatsAppConnector) downloadStickerDirectMedia(ctx context.Context, par
 		return nil, fmt.Errorf("%w: user login %s not found", bridgev2.ErrNotLoggedIn, parsedID.UserLogin)
 	}
 	waClient := ul.Client.(*WhatsAppClient)
-	if waClient.Client == nil {
+	cli := waClient.getClient()
+	if cli == nil {
 		return nil, fmt.Errorf("no WhatsApp client found on login %s", parsedID.UserLogin)
 	}
-	sticker, err := wa.MsgConv.GetCachedSticker(ctx, waClient.Client, parsedID.Sticker.PackID, parsedID.Sticker.FileHash)
+	sticker, err := wa.MsgConv.GetCachedSticker(ctx, cli, parsedID.Sticker.PackID, parsedID.Sticker.FileHash)
 	if err != nil {
 		return nil, err
 	} else if sticker == nil {
@@ -209,7 +211,7 @@ func (wa *WhatsAppConnector) downloadMessageDirectMedia(ctx context.Context, par
 		return nil, bridgev2.ErrNotLoggedIn
 	}
 	waClient := ul.Client.(*WhatsAppClient)
-	if waClient.Client == nil {
+	if waClient.getClient() == nil {
 		return nil, fmt.Errorf("no WhatsApp client found on login")
 	}
 	return wa.makeDirectMediaResponse(ctx, waClient, keys, keys.MimeType, msg.ID, keys, params)
@@ -227,7 +229,11 @@ func (wa *WhatsAppConnector) makeDirectMediaResponse(
 	return &mediaproxy.GetMediaResponseFile{
 		Callback: func(f *os.File) (*mediaproxy.FileMeta, error) {
 			log := zerolog.Ctx(ctx)
-			err := waClient.Client.DownloadToFile(ctx, dm, f)
+			cli := waClient.getClient()
+			if cli == nil {
+				return nil, bridgev2.ErrNotLoggedIn
+			}
+			err := cli.DownloadToFile(ctx, dm, f)
 			if keys != nil && (errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith403) || errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith404) || errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith410) || errors.Is(err, whatsmeow.ErrNoURLPresent)) {
 				val := params["com.beeper.interactive_download_request"]
 				if val == "false" || (!wa.Config.DirectMediaAutoRequest && val != "true") {
@@ -240,7 +246,7 @@ func (wa *WhatsAppConnector) makeDirectMediaResponse(
 					return nil, err
 				}
 				log.Trace().Msg("Retrying download after successful retry")
-				err = waClient.Client.DownloadToFile(ctx, keys, f)
+				err = cli.DownloadToFile(ctx, keys, f)
 			}
 			if errors.Is(err, whatsmeow.ErrInvalidMediaSHA256) {
 				zerolog.Ctx(ctx).Warn().Err(err).Msg("Mismatching media checksums in message. Ignoring because WhatsApp seems to ignore them too")

@@ -40,7 +40,7 @@ func (wa *WhatsAppClient) historySyncLoop(ctx context.Context) {
 	} else {
 		dispatchTimer.Stop()
 	}
-	if wa.Client.ManualHistorySyncDownload {
+	if wa.getClient().ManualHistorySyncDownload {
 		// Wake up the queue once to check if there are pending notifications
 		select {
 		case wa.historySyncWakeup <- struct{}{}:
@@ -122,7 +122,7 @@ func (wa *WhatsAppClient) downloadAndSaveWAHistorySyncData(ctx context.Context, 
 		Any("access_status", evt.GetMessageAccessStatus()).
 		Str("peer_data_request_session_id", evt.GetPeerDataRequestSessionID()).
 		Msg("Downloading history sync")
-	blob, err := wa.Client.DownloadHistorySync(log.WithContext(ctx), evt, true)
+	blob, err := wa.getClient().DownloadHistorySync(log.WithContext(ctx), evt, true)
 	if err != nil {
 		log.Err(err).Msg("Failed to download history sync")
 		return
@@ -131,7 +131,7 @@ func (wa *WhatsAppClient) downloadAndSaveWAHistorySyncData(ctx context.Context, 
 		wa.handleOnDemandHistorySync(ctx, blob)
 		if err = wa.Main.DB.HSNotif.Delete(ctx, rowid); err != nil {
 			log.Err(err).Msg("Failed to delete queued on-demand history sync notification")
-		} else if err = wa.Client.DeleteMedia(ctx, whatsmeow.MediaHistory, evt.GetDirectPath(), evt.GetFileEncSHA256(), evt.GetEncHandle()); err != nil {
+		} else if err = wa.getClient().DeleteMedia(ctx, whatsmeow.MediaHistory, evt.GetDirectPath(), evt.GetFileEncSHA256(), evt.GetEncHandle()); err != nil {
 			log.Err(err).Msg("Failed to delete history sync blob from server")
 		} else {
 			log.Debug().Msg("Finished handling on-demand history sync and deleted history sync blob from server")
@@ -155,7 +155,7 @@ func (wa *WhatsAppClient) downloadAndSaveWAHistorySyncData(ctx context.Context, 
 		resetTimer = blob.GetSyncType() == waHistorySync.HistorySync_INITIAL_BOOTSTRAP ||
 			blob.GetSyncType() == waHistorySync.HistorySync_RECENT ||
 			blob.GetSyncType() == waHistorySync.HistorySync_FULL
-		err = wa.Client.DeleteMedia(ctx, whatsmeow.MediaHistory, evt.GetDirectPath(), evt.GetFileEncSHA256(), evt.GetEncHandle())
+		err = wa.getClient().DeleteMedia(ctx, whatsmeow.MediaHistory, evt.GetDirectPath(), evt.GetFileEncSHA256(), evt.GetEncHandle())
 		if err != nil {
 			log.Err(err).Msg("Failed to delete history sync blob from server")
 		} else {
@@ -256,7 +256,7 @@ func (wa *WhatsAppClient) handleWAHistorySync(
 		var newerTS uint64
 		for i, rawMsg := range rawMessages {
 			// Don't store messages that will just be skipped.
-			msgEvt, err := wa.Client.ParseWebMessage(jid, rawMsg.GetMessage())
+			msgEvt, err := wa.getClient().ParseWebMessage(jid, rawMsg.GetMessage())
 			if err != nil {
 				log.Warn().Err(err).
 					Int("msg_index", i).
@@ -387,7 +387,7 @@ func (wa *WhatsAppClient) createPortalsFromHistorySync(ctx context.Context) {
 		if ctx.Err() != nil {
 			log.Warn().Err(ctx.Err()).Msg("Context cancelled, stopping history sync portal creation")
 			return
-		} else if wa.Client == nil {
+		} else if wa.getClient() == nil {
 			log.Warn().Msg("Client is nil, stopping history sync portal creation")
 			return
 		}
@@ -602,7 +602,8 @@ func (wa *WhatsAppClient) convertHistorySyncMessages(
 	messages []*waWeb.WebMessageInfo,
 	explodeOnError bool,
 ) (*bridgev2.FetchMessagesResponse, error) {
-	if wa.Client == nil {
+	cli := wa.getClient()
+	if cli == nil {
 		return nil, bridgev2.ErrNotLoggedIn
 	}
 	oldestTS := messages[len(messages)-1].GetMessageTimestamp()
@@ -611,7 +612,7 @@ func (wa *WhatsAppClient) convertHistorySyncMessages(
 	var mediaRequests []*wadb.MediaRequest
 	dups := make(exmaps.Set[networkid.MessageID])
 	for i, msg := range messages {
-		evt, err := wa.Client.ParseWebMessage(portalJID, msg)
+		evt, err := cli.ParseWebMessage(portalJID, msg)
 		if err != nil {
 			if explodeOnError {
 				// This should never happen because the info is already parsed once before being stored in the database
@@ -684,8 +685,8 @@ func (wa *WhatsAppClient) fetchMessagesFromPhone(ctx context.Context, portalJID 
 		return nil, fmt.Errorf("failed to parse anchor message ID: %w", err)
 	}
 
-	msgID := wa.Client.GenerateMessageID()
-	reqData := wa.Client.BuildHistorySyncRequest(&types.MessageInfo{
+	msgID := wa.getClient().GenerateMessageID()
+	reqData := wa.getClient().BuildHistorySyncRequest(&types.MessageInfo{
 		MessageSource: types.MessageSource{
 			Chat:     portalJID,
 			Sender:   parsed.Sender,
@@ -701,7 +702,7 @@ func (wa *WhatsAppClient) fetchMessagesFromPhone(ctx context.Context, portalJID 
 		Any("anchor_msg_parsed", parsed).
 		Any("request_data", reqData).
 		Msg("Sending history sync request")
-	_, err = wa.Client.SendMessage(ctx, wa.JID.ToNonAD(), reqData, whatsmeow.SendRequestExtra{
+	_, err = wa.getClient().SendMessage(ctx, wa.JID.ToNonAD(), reqData, whatsmeow.SendRequestExtra{
 		ID:   msgID,
 		Peer: true,
 	})
@@ -790,7 +791,7 @@ func (wa *WhatsAppClient) convertHistorySyncMessage(
 	intent := wa.Main.Bridge.Bot
 	msgID := waid.MakeMessageIDWithAltSender(info.Chat, info.Sender, info.SenderAlt, info.ID)
 	wrapped := &bridgev2.BackfillMessage{
-		ConvertedMessage: wa.Main.MsgConv.ToMatrix(ctx, portal, wa.Client, intent, msg, rawMsg, info, isViewOnce, true, nil),
+		ConvertedMessage: wa.Main.MsgConv.ToMatrix(ctx, portal, wa.getClient(), intent, msg, rawMsg, info, isViewOnce, true, nil),
 		Sender:           wa.makeEventSender(ctx, pickLID(info.Sender, info.SenderAlt)),
 		ID:               msgID,
 		TxnID:            networkid.TransactionID(msgID),

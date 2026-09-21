@@ -153,7 +153,7 @@ func (wa *WhatsAppClient) doGhostResync(ctx context.Context, queue map[types.JID
 		return
 	}
 	log.Debug().Array("jids", exzerolog.ArrayOfStringers(ghostJIDs)).Msg("Doing background sync for users")
-	infos, err := wa.Client.GetUserInfo(ctx, ghostJIDs)
+	infos, err := wa.getClient().GetUserInfo(ctx, ghostJIDs)
 	if err != nil {
 		log.Err(err).Msg("Failed to get user info for background sync")
 		return
@@ -367,7 +367,7 @@ func (wa *WhatsAppClient) fetchGhostAvatar(ctx context.Context, ghost *bridgev2.
 		existingID = ""
 	}
 	var wrappedAvatar *bridgev2.Avatar
-	avatar, err := wa.Client.GetProfilePictureInfo(ctx, jid, &whatsmeow.GetProfilePictureParams{ExistingID: existingID})
+	avatar, err := wa.getClient().GetProfilePictureInfo(ctx, jid, &whatsmeow.GetProfilePictureParams{ExistingID: existingID})
 	if errors.Is(err, whatsmeow.ErrProfilePictureNotSet) {
 		wrappedAvatar = &bridgev2.Avatar{
 			ID:     "remove",
@@ -393,7 +393,7 @@ func (wa *WhatsAppClient) fetchGhostAvatar(ctx context.Context, ghost *bridgev2.
 		wrappedAvatar = &bridgev2.Avatar{
 			ID: networkid.AvatarID(avatar.ID),
 			Get: func(ctx context.Context) ([]byte, error) {
-				return wa.Client.DownloadMediaWithOnlyPath(ctx, avatar.DirectPath)
+				return wa.getClient().DownloadMediaWithOnlyPath(ctx, avatar.DirectPath)
 			},
 		}
 	}

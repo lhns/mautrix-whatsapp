@@ -42,14 +42,14 @@ func (wa *WhatsAppClient) getChatInfo(ctx context.Context, portalJID types.JID, 
 			return nil, ErrBroadcastList
 		}
 	case types.GroupServer:
-		info, err := wa.Client.GetGroupInfo(ctx, portalJID)
+		info, err := wa.getClient().GetGroupInfo(ctx, portalJID)
 		if err != nil {
 			return nil, err
 		}
 		wrapped = wa.wrapGroupInfo(ctx, info)
 		wrapped.ExtraUpdates = bridgev2.MergeExtraUpdaters(wrapped.ExtraUpdates, updatePortalLastSyncAt)
 	case types.NewsletterServer:
-		info, err := wa.Client.GetNewsletterInfo(ctx, portalJID)
+		info, err := wa.getClient().GetNewsletterInfo(ctx, portalJID)
 		if err != nil {
 			return nil, err
 		}
@@ -451,7 +451,7 @@ func (wa *WhatsAppClient) makePortalAvatarFetcher(avatarID string, sender types.
 			existingID = ""
 		}
 		var wrappedAvatar *bridgev2.Avatar
-		avatar, err := wa.Client.GetProfilePictureInfo(ctx, jid, &whatsmeow.GetProfilePictureParams{
+		avatar, err := wa.getClient().GetProfilePictureInfo(ctx, jid, &whatsmeow.GetProfilePictureParams{
 			ExistingID:  existingID,
 			IsCommunity: portal.RoomType == database.RoomTypeSpace,
 		})
@@ -480,7 +480,7 @@ func (wa *WhatsAppClient) makePortalAvatarFetcher(avatarID string, sender types.
 			wrappedAvatar = &bridgev2.Avatar{
 				ID: networkid.AvatarID(avatar.ID),
 				Get: func(ctx context.Context) ([]byte, error) {
-					return wa.Client.DownloadMediaWithOnlyPath(ctx, avatar.DirectPath)
+					return wa.getClient().DownloadMediaWithOnlyPath(ctx, avatar.DirectPath)
 				},
 			}
 		}
@@ -519,18 +519,18 @@ func (wa *WhatsAppClient) wrapNewsletterInfo(ctx context.Context, info *types.Ne
 	if info.ThreadMeta.Picture != nil {
 		avatar.ID = networkid.AvatarID(info.ThreadMeta.Picture.ID)
 		avatar.Get = func(ctx context.Context) ([]byte, error) {
-			return wa.Client.DownloadMediaWithOnlyPath(ctx, info.ThreadMeta.Picture.DirectPath)
+			return wa.getClient().DownloadMediaWithOnlyPath(ctx, info.ThreadMeta.Picture.DirectPath)
 		}
 	} else if info.ThreadMeta.Preview.ID != "" {
 		avatar.ID = networkid.AvatarID(info.ThreadMeta.Preview.ID)
 		avatar.Get = func(ctx context.Context) ([]byte, error) {
-			meta, err := wa.Client.GetNewsletterInfo(ctx, info.ID)
+			meta, err := wa.getClient().GetNewsletterInfo(ctx, info.ID)
 			if err != nil {
 				return nil, fmt.Errorf("failed to fetch full res avatar info: %w", err)
 			} else if meta.ThreadMeta.Picture == nil {
 				return nil, fmt.Errorf("full res avatar info is missing")
 			}
-			return wa.Client.DownloadMediaWithOnlyPath(ctx, meta.ThreadMeta.Picture.DirectPath)
+			return wa.getClient().DownloadMediaWithOnlyPath(ctx, meta.ThreadMeta.Picture.DirectPath)
 		}
 	} else {
 		avatar.ID = "remove"

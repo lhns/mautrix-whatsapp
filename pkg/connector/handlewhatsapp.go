@@ -294,7 +294,7 @@ func (wa *WhatsAppClient) handleWAMessage(ctx context.Context, evt *events.Messa
 	}
 	parsedMessageType := getMessageType(evt.Message)
 	if encReact := evt.Message.GetEncReactionMessage(); encReact != nil {
-		decrypted, err := wa.Client.DecryptReaction(ctx, evt)
+		decrypted, err := wa.getClient().DecryptReaction(ctx, evt)
 		if err != nil {
 			wa.UserLogin.Log.Err(err).Str("message_id", evt.Info.ID).Msg("Failed to decrypt reaction")
 			return
@@ -303,7 +303,7 @@ func (wa *WhatsAppClient) handleWAMessage(ctx context.Context, evt *events.Messa
 		evt.Message.ReactionMessage = decrypted
 	}
 	if encComment := evt.Message.GetEncCommentMessage(); encComment != nil {
-		decrypted, err := wa.Client.DecryptComment(ctx, evt)
+		decrypted, err := wa.getClient().DecryptComment(ctx, evt)
 		if err != nil {
 			wa.UserLogin.Log.Err(err).Str("message_id", evt.Info.ID).Msg("Failed to decrypt comment")
 		} else {
@@ -312,7 +312,7 @@ func (wa *WhatsAppClient) handleWAMessage(ctx context.Context, evt *events.Messa
 		}
 	}
 	if encMessage := evt.Message.GetSecretEncryptedMessage(); encMessage != nil {
-		decrypted, err := wa.Client.DecryptSecretEncryptedMessage(ctx, evt)
+		decrypted, err := wa.getClient().DecryptSecretEncryptedMessage(ctx, evt)
 		if err != nil {
 			wa.UserLogin.Log.Err(err).
 				Str("message_id", evt.Info.ID).
@@ -564,7 +564,7 @@ func (wa *WhatsAppClient) handleWALogout(ctx context.Context, reason events.Conn
 		errorCode = WAMainDeviceGone
 	}
 	wa.Disconnect()
-	wa.Client = nil
+	wa.client.Store(nil)
 	wa.JID = types.EmptyJID
 	wa.LID = types.EmptyJID
 	wa.UserLogin.Metadata.(*waid.UserLoginMetadata).WADeviceID = 0
@@ -957,7 +957,7 @@ func (wa *WhatsAppClient) handleWAAppStateSyncError(ctx context.Context, evt *ev
 			Err(evt.Error).
 			Msg("Trying full sync for app state after partial sync error")
 		go func() {
-			err := wa.Client.FetchAppState(ctx, evt.Name, true, false)
+			err := wa.getClient().FetchAppState(ctx, evt.Name, true, false)
 			if err != nil {
 				log.Err(err).Msg("Full app state sync failed")
 			} else {
@@ -981,7 +981,7 @@ func (wa *WhatsAppClient) handleWAAppStateSyncError(ctx context.Context, evt *ev
 		"patch_name": evt.Name,
 	})
 	go func() {
-		resp, err := wa.Client.SendPeerMessage(ctx, whatsmeow.BuildAppStateRecoveryRequest(evt.Name))
+		resp, err := wa.getClient().SendPeerMessage(ctx, whatsmeow.BuildAppStateRecoveryRequest(evt.Name))
 		if err != nil {
 			log.Err(err).Msg("Failed to send app state recovery request")
 		} else {

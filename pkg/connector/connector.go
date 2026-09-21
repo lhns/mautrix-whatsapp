@@ -240,6 +240,8 @@ func (wa *WhatsAppConnector) ResetHTTPTransport() {
 
 func (wa *WhatsAppConnector) ResetNetworkConnections() {
 	for _, login := range wa.Bridge.GetAllCachedUserLogins() {
-		login.Client.(*WhatsAppClient).Client.ResetConnection()
+		if cli := login.Client.(*WhatsAppClient).getClient(); cli != nil {
+			cli.ResetConnection()
+		}
 	}
 }

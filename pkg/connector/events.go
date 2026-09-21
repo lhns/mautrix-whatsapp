@@ -154,7 +154,7 @@ func (evt *WAMessageEvent) PreHandle(ctx context.Context, portal *bridgev2.Porta
 	log := zerolog.Ctx(ctx).With().Str("action", "group lid migration").Logger()
 	ctx = log.WithContext(ctx)
 	meta.LIDMigrationAttempted = true
-	info, err := evt.wa.Client.GetGroupInfo(ctx, portalJID)
+	info, err := evt.wa.getClient().GetGroupInfo(ctx, portalJID)
 	if err != nil {
 		log.Err(err).Msg("Failed to get group info for lid migration")
 		return
@@ -199,7 +199,7 @@ func (evt *WAMessageEvent) ConvertEdit(ctx context.Context, portal *bridgev2.Por
 
 	ctx = context.WithValue(ctx, msgconv.ContextKeyEditTargetID, evt.Message.GetProtocolMessage().GetKey().GetID())
 	cm := evt.wa.Main.MsgConv.ToMatrix(
-		ctx, portal, evt.wa.Client, intent, editedMsg, evt.MsgEvent.RawMessage, &evt.Info, evt.isViewOnce(), false, previouslyConvertedPart,
+		ctx, portal, evt.wa.getClient(), intent, editedMsg, evt.MsgEvent.RawMessage, &evt.Info, evt.isViewOnce(), false, previouslyConvertedPart,
 	)
 	if evt.isUndecryptableUpsertSubEvent && isFailedMedia(cm) {
 		evt.postHandle = func() {
@@ -225,12 +225,12 @@ func (evt *WAMessageEvent) GetTargetMessage() networkid.MessageID {
 		ctx := evt.wa.UserLogin.Log.
 			With().Str("action", "get reaction target message").Str("message_id", evt.Info.ID).Logger().
 			WithContext(evt.wa.Main.Bridge.BackgroundCtx)
-		return msgconv.KeyToMessageID(ctx, evt.wa.Client, evt.Info.Chat, evt.Info.Sender, reactionMsg.GetKey())
+		return msgconv.KeyToMessageID(ctx, evt.wa.getClient(), evt.Info.Chat, evt.Info.Sender, reactionMsg.GetKey())
 	} else if protocolMsg := evt.Message.GetProtocolMessage(); protocolMsg != nil {
 		ctx := evt.wa.UserLogin.Log.
 			With().Str("action", "get edit target message").Str("message_id", evt.Info.ID).Logger().
 			WithContext(evt.wa.Main.Bridge.BackgroundCtx)
-		return msgconv.KeyToMessageID(ctx, evt.wa.Client, evt.Info.Chat, evt.Info.Sender, protocolMsg.GetKey())
+		return msgconv.KeyToMessageID(ctx, evt.wa.getClient(), evt.Info.Chat, evt.Info.Sender, protocolMsg.GetKey())
 	}
 	return ""
 }
@@ -284,7 +284,7 @@ func (evt *WAMessageEvent) HandleExisting(ctx context.Context, portal *bridgev2.
 func (evt *WAMessageEvent) ConvertMessage(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI) (*bridgev2.ConvertedMessage, error) {
 	evt.wa.EnqueuePortalResync(portal, false)
 	converted := evt.wa.Main.MsgConv.ToMatrix(
-		ctx, portal, evt.wa.Client, intent, evt.Message, evt.MsgEvent.RawMessage, &evt.Info, evt.isViewOnce(), false, nil,
+		ctx, portal, evt.wa.getClient(), intent, evt.Message, evt.MsgEvent.RawMessage, &evt.Info, evt.isViewOnce(), false, nil,
 	)
 	if isFailedMedia(converted) {
 		evt.postHandle = func() {
@@ -502,7 +502,7 @@ func (evt *WAMediaRetry) ConvertEdit(ctx context.Context, portal *bridgev2.Porta
 	defer evt.wa.mediaRetryLock.Release(1)
 
 	mediaMeta.FailedKeys.DirectPath = retryData.GetDirectPath()
-	return evt.wa.Main.MsgConv.MediaRetryToMatrix(ctx, &mediaMeta, evt.wa.Client, intent, portal, existing[0]), nil
+	return evt.wa.Main.MsgConv.MediaRetryToMatrix(ctx, &mediaMeta, evt.wa.getClient(), intent, portal, existing[0]), nil
 }
 
 var (

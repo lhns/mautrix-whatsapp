@@ -67,7 +67,11 @@ func (wa *WhatsAppClient) sendHackyPhonePing() {
 	ctx := log.WithContext(context.Background())
 	meta := wa.UserLogin.Metadata.(*waid.UserLoginMetadata)
 	meta.PhoneLastPinged = jsontime.UnixNow()
-	msgID := wa.Client.GenerateMessageID()
+	cli := wa.getClient()
+	if cli == nil {
+		return
+	}
+	msgID := cli.GenerateMessageID()
 	keyIDs := make([]*waE2E.AppStateSyncKeyId, 0, 1)
 	var lastKeyID []byte
 	err := wa.Main.DB.QueryRow(ctx, getUserLastAppStateKeyIDQuery, wa.JID).Scan(&lastKeyID)
@@ -78,7 +82,7 @@ func (wa *WhatsAppClient) sendHackyPhonePing() {
 			KeyID: lastKeyID,
 		})
 	}
-	resp, err := wa.Client.SendMessage(ctx, wa.JID.ToNonAD(), &waE2E.Message{
+	resp, err := cli.SendMessage(ctx, wa.JID.ToNonAD(), &waE2E.Message{
 		ProtocolMessage: &waE2E.ProtocolMessage{
 			Type: waE2E.ProtocolMessage_APP_STATE_SYNC_KEY_REQUEST.Enum(),
 			AppStateSyncKeyRequest: &waE2E.AppStateSyncKeyRequest{
@@ -115,7 +119,8 @@ func (wa *WhatsAppClient) phoneSeen(ts time.Time) {
 	hadBeenSeen := wa.PhoneRecentlySeen(false)
 	meta.PhoneLastSeen = jsontime.U(ts)
 	if !hadBeenSeen {
-		isConnected := wa.IsLoggedIn() && wa.Client.IsConnected()
+		cli := wa.getClient()
+		isConnected := cli != nil && cli.IsLoggedIn() && cli.IsConnected()
 		prevStateError := wa.UserLogin.BridgeState.GetPrev().Error
 		if prevStateError == WAPhoneOffline && isConnected {
 			log.Debug().Msg("Saw phone after current bridge state said it has been offline, switching state back to connected")

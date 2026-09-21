@@ -60,7 +60,7 @@ var _ mWAClient = (*WhatsAppClient)(nil)
 
 // Deprecated: ignore DangerousInternal error
 func (wa *WhatsAppClient) MSend(bytes []byte) {
-	_, err := wa.Client.DangerousInternals().SendIQAsync(wa.Main.Bridge.BackgroundCtx, whatsmeow.DangerousInfoQuery{
+	_, err := wa.getClient().DangerousInternals().SendIQAsync(wa.Main.Bridge.BackgroundCtx, whatsmeow.DangerousInfoQuery{
 		Namespace: "w:stats",
 		Type:      "set",
 		To:        types.ServerJID,

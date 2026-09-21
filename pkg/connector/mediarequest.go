@@ -152,7 +152,7 @@ func (wa *WhatsAppClient) sendMediaRequestDirect(ctx context.Context, rawMsgID n
 	if err != nil {
 		return fmt.Errorf("failed to parse message ID: %w", err)
 	}
-	return wa.Client.SendMediaRetryReceipt(ctx, &types.MessageInfo{
+	return wa.getClient().SendMediaRetryReceipt(ctx, &types.MessageInfo{
 		ID: msgID.ID,
 		MessageSource: types.MessageSource{
 			IsFromMe: wa.IsOwnJID(msgID.Sender),
