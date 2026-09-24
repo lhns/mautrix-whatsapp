@@ -193,7 +193,10 @@ func (wa *WhatsAppClient) getUserInfo(ctx context.Context, jid types.JID, avatar
 	return wa.contactToUserInfo(ctx, jid, contact, avatarID, fetchAvatar), nil
 }
 
-func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, contact types.ContactInfo, avatarID string, fetchAvatar bool) *bridgev2.UserInfo {
+// resolveContact merges in what the alternate (LID or phone number) identity knows about a
+// contact and derives the phone number, so a contact recorded under only one of the two still
+// resolves.
+func (wa *WhatsAppClient) resolveContact(ctx context.Context, jid types.JID, contact types.ContactInfo) (types.ContactInfo, string) {
 	if jid == types.MetaAIJID && contact.PushName == jid.User {
 		contact.PushName = "Meta AI"
 	} else if jid == types.LegacyPSAJID || jid == types.PSAJID {
@@ -261,6 +264,11 @@ func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, 
 	} else if altJID.Server == types.DefaultUserServer {
 		phone = "+" + altJID.User
 	}
+	return contact, phone
+}
+
+func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, contact types.ContactInfo, avatarID string, fetchAvatar bool) *bridgev2.UserInfo {
+	contact, phone := wa.resolveContact(ctx, jid, contact)
 	ui := &bridgev2.UserInfo{
 		Name:         ptr.Ptr(wa.Main.Config.FormatDisplayname(jid, phone, contact)),
 		IsBot:        ptr.Ptr(jid.IsBot()),
@@ -462,7 +470,42 @@ func (wa *WhatsAppClient) resyncContacts(forceAvatarSync, automatic bool) {
 			userInfo := wa.contactToUserInfo(ctx, jid, contact, "", forceAvatarSync || ghost.AvatarID == "")
 			ghost.UpdateInfo(ctx, userInfo)
 			wa.syncAltGhostWithInfo(ctx, jid, ghost)
+			wa.updateDMPortalNames(ctx, jid)
 		}
+	}
+}
+
+// updateDMPortalNames queues a resync of a contact's existing DM rooms, so they pick up a changed
+// dm_room_name_template render and the ghost's avatar.
+func (wa *WhatsAppClient) updateDMPortalNames(ctx context.Context, jid types.JID) {
+	if !wa.Main.Config.shouldSetDMRoomName(wa.Main.Bridge.Config.PrivateChatPortalMeta) {
+		return
+	}
+	// A contact's portal may be keyed under either the phone number or the LID, so look up both.
+	userIDs := []networkid.UserID{waid.MakeUserID(jid)}
+	if altJID, err := wa.GetStore().GetAltJID(ctx, jid); err == nil && !altJID.IsEmpty() {
+		if altID := waid.MakeUserID(altJID); altID != "" && altID != userIDs[0] {
+			userIDs = append(userIDs, altID)
+		}
+	}
+	for _, userID := range userIDs {
+		portal, err := wa.Main.Bridge.GetDMPortal(ctx, wa.UserLogin.ID, userID)
+		if err != nil {
+			zerolog.Ctx(ctx).Err(err).Str("user_id", string(userID)).Msg("Failed to get DM portal to name")
+			continue
+		} else if portal == nil || portal.MXID == "" {
+			continue
+		}
+		wa.UserLogin.QueueRemoteEvent(&simplevent.ChatResync{
+			EventMeta: simplevent.EventMeta{
+				Type: bridgev2.RemoteEventChatResync,
+				LogContext: func(c zerolog.Context) zerolog.Context {
+					return c.Str("sync_reason", "dm room name")
+				},
+				PortalKey: portal.PortalKey,
+			},
+			GetChatInfoFunc: wa.GetChatInfo,
+		})
 	}
 }
 
