@@ -185,6 +185,16 @@ func (wa *WhatsAppClient) wrapDMInfo(ctx context.Context, jid types.JID) *bridge
 	if jid.Server == types.BotServer {
 		info.Topic = ptr.Ptr(BotChatTopic)
 	}
+	if wa.Main.Bridge.Config.PrivateChatPortalMeta && !wa.IsOwnJID(jid) {
+		if wa.Main.Config.DMRoomNameTemplate == "" {
+			// Clears the custom-name flag an earlier template left, so the room follows the ghost again.
+			info.Name = bridgev2.DefaultChatName
+		} else if name := wa.dmRoomName(ctx, jid); name != "" {
+			info.Name = ptr.Ptr(name)
+			// A custom name stops bridgev2 from copying the ghost's avatar to the room.
+			info.Avatar = wa.dmRoomAvatar(ctx, jid)
+		}
+	}
 	if wa.IsOwnJID(jid) {
 		// For chats with self, force-split the members so the user's own ghost is always in the room.
 		info.Members.MemberMap = map[networkid.UserID]bridgev2.ChatMember{
@@ -255,6 +265,40 @@ func setTopicID(id, topic string) bridgev2.ExtraUpdater[*bridgev2.Portal] {
 			return true
 		}
 		return false
+	}
+}
+
+// dmRoomName renders dm_room_name_template for a contact, or "" if the contact cannot be read.
+func (wa *WhatsAppClient) dmRoomName(ctx context.Context, jid types.JID) string {
+	contact, err := wa.GetStore().Contacts.GetContact(ctx, jid)
+	if err != nil {
+		zerolog.Ctx(ctx).Err(err).Stringer("jid", jid).Msg("Failed to get contact info for DM room name")
+		return ""
+	}
+	resolved, phone := wa.resolveContact(ctx, jid, contact)
+	name, err := wa.Main.Config.formatDMRoomName(jid, phone, resolved)
+	if err != nil {
+		zerolog.Ctx(ctx).Err(err).Stringer("jid", jid).Msg("Failed to format DM room name")
+		return ""
+	}
+	return name
+}
+
+// dmRoomAvatar returns the ghost's avatar the way bridgev2 would copy it to a DM room, or nil
+// while the ghost's avatar upload has failed.
+func (wa *WhatsAppClient) dmRoomAvatar(ctx context.Context, jid types.JID) *bridgev2.Avatar {
+	ghost, err := wa.Main.Bridge.GetExistingGhostByID(ctx, waid.MakeUserID(jid))
+	if err != nil {
+		zerolog.Ctx(ctx).Err(err).Stringer("jid", jid).Msg("Failed to get ghost for DM room avatar")
+		return nil
+	} else if ghost == nil || (ghost.AvatarMXC == "" && !ghost.AvatarSet && ghost.AvatarID != "") {
+		return nil
+	}
+	return &bridgev2.Avatar{
+		ID:     ghost.AvatarID,
+		MXC:    ghost.AvatarMXC,
+		Hash:   ghost.AvatarHash,
+		Remove: ghost.AvatarID == "" || ghost.AvatarMXC == "",
 	}
 }
 
