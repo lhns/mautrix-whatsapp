@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -275,7 +276,34 @@ func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, 
 	} else if fetchAvatar {
 		ui.ExtraUpdates = bridgev2.MergeExtraUpdaters(ui.ExtraUpdates, wa.fetchGhostAvatar)
 	}
+	holdBackUnnamed(ui, wa.Main.Config.contactNamesGhost(jid, phone, contact))
 	return ui
+}
+
+// holdBackUnnamed stops a displayname that no contact name contributed to from replacing the
+// ghost's name: ghosts are shared by every login, contact stores are not. The check runs in
+// ExtraUpdates, under the ghost's syncLock, so a concurrent named update cannot be overwritten.
+func holdBackUnnamed(ui *bridgev2.UserInfo, named bool) {
+	if named || ui.Name == nil {
+		return
+	}
+	fallback := *ui.Name
+	ui.Name = nil
+	ui.ExtraUpdates = bridgev2.MergeExtraUpdaters(ui.ExtraUpdates, func(ctx context.Context, ghost *bridgev2.Ghost) bool {
+		if ghost.Name != "" && ghost.NameSet {
+			return false
+		}
+		// Retries pushing an existing name that failed, else sets the fallback on a nameless ghost.
+		return ghost.UpdateName(ctx, cmp.Or(ghost.Name, fallback))
+	})
+}
+
+// contactNamesGhost reports whether any contact name field changed the rendered displayname,
+// without assuming which fields the template reads.
+func (c *Config) contactNamesGhost(jid types.JID, phone string, contact types.ContactInfo) bool {
+	unnamed := contact
+	unnamed.FirstName, unnamed.FullName, unnamed.PushName, unnamed.BusinessName = "", "", "", ""
+	return c.FormatDisplayname(jid, phone, contact) != c.FormatDisplayname(jid, phone, unnamed)
 }
 
 func updateGhostLastSyncAt(_ context.Context, ghost *bridgev2.Ghost) bool {
