@@ -743,6 +743,7 @@ func (wa *WhatsAppClient) syncGhost(jid types.JID, reason string, pictureID *str
 		ghost.UpdateInfo(ctx, userInfo)
 		log.Debug().Msg("Synced ghost info")
 		wa.syncAltGhostWithInfo(ctx, jid, ghost)
+		wa.updateDMPortalNames(ctx, jid)
 	}
 	go wa.syncRemoteProfile(ctx, ghost)
 }
