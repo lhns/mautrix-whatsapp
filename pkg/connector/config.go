@@ -33,7 +33,8 @@ type Config struct {
 	GetProxyURL    string `yaml:"get_proxy_url"`
 	ProxyOnlyLogin bool   `yaml:"proxy_only_login"`
 
-	DisplaynameTemplate string `yaml:"displayname_template"`
+	DisplaynameTemplate   string `yaml:"displayname_template"`
+	GroupRoomNameTemplate string `yaml:"group_room_name_template"`
 
 	CallStartNotices            bool          `yaml:"call_start_notices"`
 	IdentityChangeNotices       bool          `yaml:"identity_change_notices"`
@@ -77,7 +78,8 @@ type Config struct {
 		BackwardsOnDemand bool `yaml:"backwards_on_demand"`
 	} `yaml:"history_sync"`
 
-	displaynameTemplate *template.Template `yaml:"-"`
+	displaynameTemplate   *template.Template `yaml:"-"`
+	groupRoomNameTemplate *template.Template `yaml:"-"`
 }
 
 type umConfig Config
@@ -101,6 +103,14 @@ func (c *Config) PostProcess() error {
 	if err != nil {
 		return fmt.Errorf("failed to execute displayname template: %w", err)
 	}
+	c.groupRoomNameTemplate, err = template.New("grouproomname").Parse(c.GroupRoomNameTemplate)
+	if err != nil {
+		return err
+	}
+	_, err = c.formatGroupRoomName(types.GroupServerJID, "subject")
+	if err != nil {
+		return fmt.Errorf("failed to execute group room name template: %w", err)
+	}
 	return nil
 }
 
@@ -113,6 +123,7 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Bool, "proxy_only_login")
 
 	helper.Copy(up.Str, "displayname_template")
+	helper.Copy(up.Str, "group_room_name_template")
 
 	helper.Copy(up.Bool, "call_start_notices")
 	helper.Copy(up.Bool, "identity_change_notices")
@@ -162,6 +173,34 @@ type DisplaynameParams struct {
 	VName  string
 	Name   string
 	Short  string
+}
+
+// GroupNameParams are the fields available to group_room_name_template.
+type GroupNameParams struct {
+	// Name is the group subject as WhatsApp has it.
+	Name string
+	JID  string
+}
+
+func (c *Config) shouldSetGroupRoomName() bool {
+	return c.GroupRoomNameTemplate != ""
+}
+
+// formatGroupRoomName renders the template, or returns the subject unchanged when no template is
+// configured, which is the stock behaviour. An empty subject stays empty, so bridgev2 can fall back.
+func (c *Config) formatGroupRoomName(jid types.JID, name string) (string, error) {
+	if !c.shouldSetGroupRoomName() || name == "" {
+		return name, nil
+	}
+	var nameBuf strings.Builder
+	err := c.groupRoomNameTemplate.Execute(&nameBuf, &GroupNameParams{
+		Name: name,
+		JID:  jid.String(),
+	})
+	if err != nil {
+		return "", err
+	}
+	return nameBuf.String(), nil
 }
 
 func (c *Config) formatDisplayname(jid types.JID, phone string, contact types.ContactInfo) (string, error) {
