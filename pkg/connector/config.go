@@ -224,8 +224,18 @@ func (c *Config) formatDisplayname(jid types.JID, phone string, contact types.Co
 	return c.execNameTemplate(c.displaynameTemplate, jid, phone, contact)
 }
 
+// formatDMRoomName falls back to the displayname when nothing about the contact reached the
+// render, e.g. a LID-only contact under a template with no final fallback.
 func (c *Config) formatDMRoomName(jid types.JID, phone string, contact types.ContactInfo) (string, error) {
-	return c.execNameTemplate(c.dmRoomNameTemplate, jid, phone, contact)
+	name, err := c.execNameTemplate(c.dmRoomNameTemplate, jid, phone, contact)
+	if err != nil {
+		return "", err
+	}
+	blank, err := c.execNameTemplate(c.dmRoomNameTemplate, types.EmptyJID, "", types.ContactInfo{})
+	if err != nil || name != blank {
+		return name, err
+	}
+	return c.formatDisplayname(jid, phone, contact)
 }
 
 func (c *Config) execNameTemplate(tmpl *template.Template, jid types.JID, phone string, contact types.ContactInfo) (string, error) {

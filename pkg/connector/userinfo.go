@@ -18,6 +18,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 
@@ -496,17 +497,43 @@ func (wa *WhatsAppClient) updateDMPortalNames(ctx context.Context, jid types.JID
 		} else if portal == nil || portal.MXID == "" {
 			continue
 		}
-		wa.UserLogin.QueueRemoteEvent(&simplevent.ChatResync{
-			EventMeta: simplevent.EventMeta{
-				Type: bridgev2.RemoteEventChatResync,
-				LogContext: func(c zerolog.Context) zerolog.Context {
-					return c.Str("sync_reason", "dm room name")
-				},
-				PortalKey: portal.PortalKey,
-			},
-			GetChatInfoFunc: wa.GetChatInfo,
-		})
+		wa.queueDMRoomNameResync(portal.PortalKey)
 	}
+}
+
+// nameGhostNamedDMPortals resyncs this login's DM rooms that still follow the shared ghost's
+// name, which bridgev2 overwrites whenever any login updates that ghost.
+func (wa *WhatsAppClient) nameGhostNamedDMPortals(ctx context.Context) {
+	if !wa.Main.Config.shouldSetDMRoomName(wa.Main.Bridge.Config.PrivateChatPortalMeta) {
+		return
+	}
+	portals, err := wa.Main.Bridge.DB.Portal.GetAllWithMXID(ctx)
+	if err != nil {
+		zerolog.Ctx(ctx).Err(err).Msg("Failed to get portals to name DM rooms")
+		return
+	}
+	for _, portal := range portals {
+		if portal.Receiver != wa.UserLogin.ID || portal.RoomType != database.RoomTypeDM || portal.NameIsCustom {
+			continue
+		}
+		// wrapDMInfo leaves the chat with yourself named after your own ghost.
+		if jid, err := waid.ParsePortalID(portal.ID); err == nil && !wa.IsOwnJID(jid) {
+			wa.queueDMRoomNameResync(portal.PortalKey)
+		}
+	}
+}
+
+func (wa *WhatsAppClient) queueDMRoomNameResync(key networkid.PortalKey) {
+	wa.UserLogin.QueueRemoteEvent(&simplevent.ChatResync{
+		EventMeta: simplevent.EventMeta{
+			Type: bridgev2.RemoteEventChatResync,
+			LogContext: func(c zerolog.Context) zerolog.Context {
+				return c.Str("sync_reason", "dm room name")
+			},
+			PortalKey: key,
+		},
+		GetChatInfoFunc: wa.GetChatInfo,
+	})
 }
 
 func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JID, mainGhost *bridgev2.Ghost) {
