@@ -497,7 +497,7 @@ func (wa *WhatsAppClient) updateDMPortalNames(ctx context.Context, jid types.JID
 		} else if portal == nil || portal.MXID == "" {
 			continue
 		}
-		wa.queueDMRoomNameResync(portal.PortalKey)
+		wa.queueDMRoomNameResync(portal.PortalKey, wa.GetChatInfo)
 	}
 }
 
@@ -518,12 +518,24 @@ func (wa *WhatsAppClient) nameGhostNamedDMPortals(ctx context.Context) {
 		}
 		// wrapDMInfo leaves the chat with yourself named after your own ghost.
 		if jid, err := waid.ParsePortalID(portal.ID); err == nil && !wa.IsOwnJID(jid) {
-			wa.queueDMRoomNameResync(portal.PortalKey)
+			wa.queueDMRoomNameResync(portal.PortalKey, wa.getChatInfoSaved)
 		}
 	}
 }
 
-func (wa *WhatsAppClient) queueDMRoomNameResync(key networkid.PortalKey) {
+// getChatInfoSaved forces the portal to be saved: bridgev2 saves only when the info changed, so a
+// room whose name already matches would keep the custom-name flag in memory only.
+func (wa *WhatsAppClient) getChatInfoSaved(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
+	info, err := wa.GetChatInfo(ctx, portal)
+	if info != nil {
+		info.ExtraUpdates = bridgev2.MergeExtraUpdaters(info.ExtraUpdates, func(context.Context, *bridgev2.Portal) bool {
+			return true
+		})
+	}
+	return info, err
+}
+
+func (wa *WhatsAppClient) queueDMRoomNameResync(key networkid.PortalKey, getChatInfo func(context.Context, *bridgev2.Portal) (*bridgev2.ChatInfo, error)) {
 	wa.UserLogin.QueueRemoteEvent(&simplevent.ChatResync{
 		EventMeta: simplevent.EventMeta{
 			Type: bridgev2.RemoteEventChatResync,
@@ -532,7 +544,7 @@ func (wa *WhatsAppClient) queueDMRoomNameResync(key networkid.PortalKey) {
 			},
 			PortalKey: key,
 		},
-		GetChatInfoFunc: wa.GetChatInfo,
+		GetChatInfoFunc: getChatInfo,
 	})
 }
 
