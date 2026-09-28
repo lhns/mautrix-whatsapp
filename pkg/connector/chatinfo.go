@@ -189,8 +189,9 @@ func (wa *WhatsAppClient) wrapDMInfo(ctx context.Context, jid types.JID) *bridge
 		if wa.Main.Config.DMRoomNameTemplate == "" {
 			// Clears the custom-name flag an earlier template left, so the room follows the ghost again.
 			info.Name = bridgev2.DefaultChatName
-		} else if name := wa.dmRoomName(ctx, jid); name != "" {
-			info.Name = ptr.Ptr(name)
+		} else {
+			// Always a custom name, so bridgev2 never copies the shared ghost's name into the room.
+			info.Name = ptr.Ptr(wa.dmRoomName(ctx, jid))
 			// A custom name stops bridgev2 from copying the ghost's avatar to the room.
 			info.Avatar = wa.dmRoomAvatar(ctx, jid)
 		}
@@ -268,18 +269,17 @@ func setTopicID(id, topic string) bridgev2.ExtraUpdater[*bridgev2.Portal] {
 	}
 }
 
-// dmRoomName renders dm_room_name_template for a contact, or "" if the contact cannot be read.
+// dmRoomName renders dm_room_name_template for a contact, falling back to the displayname.
 func (wa *WhatsAppClient) dmRoomName(ctx context.Context, jid types.JID) string {
 	contact, err := wa.GetStore().Contacts.GetContact(ctx, jid)
 	if err != nil {
 		zerolog.Ctx(ctx).Err(err).Stringer("jid", jid).Msg("Failed to get contact info for DM room name")
-		return ""
 	}
 	resolved, phone := wa.resolveContact(ctx, jid, contact)
 	name, err := wa.Main.Config.formatDMRoomName(jid, phone, resolved)
 	if err != nil {
 		zerolog.Ctx(ctx).Err(err).Stringer("jid", jid).Msg("Failed to format DM room name")
-		return ""
+		return wa.Main.Config.FormatDisplayname(jid, phone, resolved)
 	}
 	return name
 }
