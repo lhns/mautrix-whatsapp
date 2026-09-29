@@ -236,9 +236,67 @@ func TestDMRoomNameAlwaysNames(t *testing.T) {
 				Client: &whatsmeow.Client{Store: &store.Device{Contacts: tc.store, LIDs: tc.store}},
 				Main:   &WhatsAppConnector{Config: *testConfig(t, tpl)},
 			}
-			if got := wa.dmRoomName(context.Background(), tc.jid); got != tc.want {
+			if got, _ := wa.dmRoomName(context.Background(), tc.jid, "", ""); got != tc.want {
 				t.Errorf("dmRoomName = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+const testDMRoomTemplate = `{{or .FullName .BusinessName .PushName .Phone}} (WA)`
+const testPhoneOnly = "+491234567890 (WA)"
+
+// A render no contact name reached must not replace a readable name.
+func TestPickDMRoomName(t *testing.T) {
+	lid := types.NewJID("20000000002", types.HiddenUserServer)
+	for _, tc := range []struct {
+		name        string
+		jid         types.JID
+		contact     types.ContactInfo
+		ghost       string
+		current     string
+		want        string
+		wantReplace bool
+	}{
+		{"contact name wins over the ghost", testJID, types.ContactInfo{FullName: "Mum"}, "Push (WA)", testPhoneOnly, "Mum (WA)", true},
+		{"nameless render takes the ghost's name", testJID, types.ContactInfo{}, "Push (WA)", testPhoneOnly, "Push (WA)", true},
+		{"nameless ghost keeps the room's name", testJID, types.ContactInfo{}, testPhoneOnly, "Old (WA)", "Old (WA)", false},
+		{"ghost wins over the room's name", testJID, types.ContactInfo{}, "Push (WA)", "Old (WA)", "Push (WA)", false},
+		{"nothing readable leaves the phone render", testJID, types.ContactInfo{}, testPhoneOnly, testPhoneOnly, testPhoneOnly, false},
+		{"a blank render is replaced", testJID, types.ContactInfo{}, "", " (WA)", testPhoneOnly, true},
+		{"a blank render is replaced by the ghost's name", testJID, types.ContactInfo{}, "Push (WA)", " (WA)", "Push (WA)", true},
+		{"a new room gets the phone render", testJID, types.ContactInfo{}, "", "", testPhoneOnly, true},
+		{"a LID ghost's placeholder is nameless", lid, types.ContactInfo{}, "Unknown user (WA)", "Old (WA)", "Old (WA)", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, replace, err := testConfig(t, testDMRoomTemplate).pickDMRoomName(tc.jid, "", tc.contact, tc.ghost, tc.current)
+			if err != nil {
+				t.Fatalf("pickDMRoomName: %v", err)
+			}
+			if got != tc.want || replace != tc.wantReplace {
+				t.Errorf("got %q (replace %v), want %q (replace %v)", got, replace, tc.want, tc.wantReplace)
+			}
+		})
+	}
+}
+
+// The connect-time repair renames on replace, so fed its own result it must not ask again,
+// or every connect would resync the same rooms.
+func TestPickDMRoomNameRepairConverges(t *testing.T) {
+	c := testConfig(t, testDMRoomTemplate)
+	for _, contact := range []types.ContactInfo{{}, {PushName: "Push"}, {FullName: "Mum"}} {
+		for _, ghost := range []string{"", testPhoneOnly, "Push (WA)"} {
+			for _, current := range []string{"", " (WA)", testPhoneOnly, "Old (WA)"} {
+				name, _, err := c.pickDMRoomName(testJID, "", contact, ghost, current)
+				if err != nil {
+					t.Fatalf("pickDMRoomName: %v", err)
+				}
+				again, replace, _ := c.pickDMRoomName(testJID, "", contact, ghost, name)
+				if replace || again != name {
+					t.Errorf("contact %+v, ghost %q, room %q: renamed to %q, then %q (replace %v)",
+						contact, ghost, current, name, again, replace)
+				}
+			}
+		}
 	}
 }

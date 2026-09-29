@@ -191,7 +191,14 @@ func (wa *WhatsAppClient) wrapDMInfo(ctx context.Context, jid types.JID) *bridge
 			info.Name = bridgev2.DefaultChatName
 		} else {
 			// Always a custom name, so bridgev2 never copies the shared ghost's name into the room.
-			info.Name = ptr.Ptr(wa.dmRoomName(ctx, jid))
+			var current string
+			if portal, err := wa.Main.Bridge.GetExistingPortalByKey(ctx, wa.makeWAPortalKey(jid)); err != nil {
+				zerolog.Ctx(ctx).Err(err).Stringer("jid", jid).Msg("Failed to get portal for DM room name")
+			} else if portal != nil {
+				current = portal.Name
+			}
+			name, _ := wa.dmRoomName(ctx, jid, wa.dmGhostName(ctx, jid), current)
+			info.Name = ptr.Ptr(name)
 			// A custom name stops bridgev2 from copying the ghost's avatar to the room.
 			info.Avatar = wa.dmRoomAvatar(ctx, jid)
 		}
@@ -269,19 +276,31 @@ func setTopicID(id, topic string) bridgev2.ExtraUpdater[*bridgev2.Portal] {
 	}
 }
 
-// dmRoomName renders dm_room_name_template for a contact, falling back to the displayname.
-func (wa *WhatsAppClient) dmRoomName(ctx context.Context, jid types.JID) string {
+// dmRoomName renders dm_room_name_template for a contact, falling back to the displayname. See
+// pickDMRoomName for ghostName, current and the returned flag.
+func (wa *WhatsAppClient) dmRoomName(ctx context.Context, jid types.JID, ghostName, current string) (string, bool) {
 	contact, err := wa.GetStore().Contacts.GetContact(ctx, jid)
 	if err != nil {
 		zerolog.Ctx(ctx).Err(err).Stringer("jid", jid).Msg("Failed to get contact info for DM room name")
 	}
 	resolved, phone := wa.resolveContact(ctx, jid, contact)
-	name, err := wa.Main.Config.formatDMRoomName(jid, phone, resolved)
+	name, replace, err := wa.Main.Config.pickDMRoomName(jid, phone, resolved, ghostName, current)
 	if err != nil {
 		zerolog.Ctx(ctx).Err(err).Stringer("jid", jid).Msg("Failed to format DM room name")
-		return wa.Main.Config.FormatDisplayname(jid, phone, resolved)
+		return wa.Main.Config.FormatDisplayname(jid, phone, resolved), false
 	}
-	return name
+	return name, replace
+}
+
+func (wa *WhatsAppClient) dmGhostName(ctx context.Context, jid types.JID) string {
+	ghost, err := wa.Main.Bridge.GetExistingGhostByID(ctx, waid.MakeUserID(jid))
+	if err != nil {
+		zerolog.Ctx(ctx).Err(err).Stringer("jid", jid).Msg("Failed to get ghost for DM room name")
+		return ""
+	} else if ghost == nil {
+		return ""
+	}
+	return ghost.Name
 }
 
 // dmRoomAvatar returns the ghost's avatar the way bridgev2 would copy it to a DM room, or nil

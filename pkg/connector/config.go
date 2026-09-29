@@ -3,6 +3,7 @@ package connector
 import (
 	_ "embed"
 	"fmt"
+	"slices"
 	"strings"
 	"text/template"
 	"time"
@@ -197,6 +198,36 @@ func (c *Config) formatDMRoomName(jid types.JID, phone string, contact types.Con
 		return name, err
 	}
 	return c.formatDisplayname(jid, phone, contact)
+}
+
+// pickDMRoomName keeps a DM room from going from a name to a nameless render: when no contact
+// name reached the render, the ghost's name and then the room's current name win over it. The
+// ghost's name is rendered from displayname_template, so it shows nothing the ghost does not.
+// replace reports whether current is a nameless render that name differs from; a repair pass
+// that acts only on that stops once it has renamed a room.
+func (c *Config) pickDMRoomName(jid types.JID, phone string, contact types.ContactInfo, ghostName, current string) (name string, replace bool, err error) {
+	name, err = c.formatDMRoomName(jid, phone, contact)
+	if err != nil {
+		return "", false, err
+	}
+	unnamed := contact
+	unnamed.FirstName, unnamed.FullName, unnamed.PushName, unnamed.BusinessName = "", "", "", ""
+	unnamedRoom, err := c.formatDMRoomName(jid, phone, unnamed)
+	if err != nil {
+		return "", false, err
+	}
+	blankRoom, err := c.execNameTemplate(c.dmRoomNameTemplate, types.EmptyJID, "", types.ContactInfo{})
+	if err != nil {
+		return "", false, err
+	}
+	nameless := []string{"", unnamedRoom, blankRoom, c.FormatDisplayname(jid, phone, unnamed)}
+	for _, candidate := range []string{name, ghostName, current} {
+		if !slices.Contains(nameless, candidate) {
+			name = candidate
+			break
+		}
+	}
+	return name, slices.Contains(nameless, current) && name != current, nil
 }
 
 func (c *Config) execNameTemplate(tmpl *template.Template, jid types.JID, phone string, contact types.ContactInfo) (string, error) {
