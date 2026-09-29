@@ -147,3 +147,51 @@ func TestHoldBackUnnamedConcurrentLogins(t *testing.T) {
 		}
 	}
 }
+
+func TestDropContactEventName(t *testing.T) {
+	tests := []struct {
+		name     string
+		template string
+		reason   string
+		wantName bool
+	}{
+		{"contact event under a template without address book names", defaultTemplate, contactEventReason, false},
+		{"push name event still renames", defaultTemplate, "push name event", true},
+		{"business name event still renames", defaultTemplate, "business name event", true},
+		{"contact event under a template reading FullName", `{{or .PushName .FullName .Phone}} (WA)`, contactEventReason, true},
+		{"contact event under a template reading FirstName", `{{or .Short .Phone}}`, contactEventReason, true},
+		{"FullName read only behind a push name", `{{if .PushName}}{{.FullName}}{{end}} (WA)`, contactEventReason, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{DisplaynameTemplate: tc.template}
+			if err := cfg.PostProcess(); err != nil {
+				t.Fatalf("PostProcess() failed: %v", err)
+			}
+			info := renderedInfo("Push (WA)", true)
+			info.Avatar = &bridgev2.Avatar{ID: "avatar"}
+			cfg.dropContactEventName(tc.reason, info)
+			if (info.Name != nil) != tc.wantName {
+				t.Errorf("Name = %v, want kept %v", info.Name, tc.wantName)
+			}
+			if len(info.Identifiers) != 1 || info.Avatar == nil {
+				t.Errorf("dropping the name dropped identifiers or avatar: %+v", info)
+			}
+		})
+	}
+}
+
+// A ghost first seen through a contact event still gets the fallback name.
+func TestDropContactEventNameKeepsFallback(t *testing.T) {
+	cfg := &Config{DisplaynameTemplate: defaultTemplate}
+	if err := cfg.PostProcess(); err != nil {
+		t.Fatalf("PostProcess() failed: %v", err)
+	}
+	ghost := newTestGhost("", false)
+	info := renderedInfo("+10000000001 (WA)", false)
+	cfg.dropContactEventName(contactEventReason, info)
+	applyName(&sync.Mutex{}, ghost, info)
+	if ghost.Name != "+10000000001 (WA)" {
+		t.Errorf("ghost name = %q, want the fallback", ghost.Name)
+	}
+}
