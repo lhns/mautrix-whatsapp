@@ -521,7 +521,8 @@ func (wa *WhatsAppClient) updateDMPortalNames(ctx context.Context, jid types.JID
 }
 
 // nameGhostNamedDMPortals resyncs this login's DM rooms that still follow the shared ghost's
-// name, which bridgev2 overwrites whenever any login updates that ghost.
+// name, which bridgev2 overwrites whenever any login updates that ghost, or that were left with a
+// nameless render.
 func (wa *WhatsAppClient) nameGhostNamedDMPortals(ctx context.Context) {
 	if !wa.Main.Config.shouldSetDMRoomName(wa.Main.Bridge.Config.PrivateChatPortalMeta) {
 		return
@@ -532,13 +533,20 @@ func (wa *WhatsAppClient) nameGhostNamedDMPortals(ctx context.Context) {
 		return
 	}
 	for _, portal := range portals {
-		if portal.Receiver != wa.UserLogin.ID || portal.RoomType != database.RoomTypeDM || portal.NameIsCustom {
+		if portal.Receiver != wa.UserLogin.ID || portal.RoomType != database.RoomTypeDM {
 			continue
 		}
 		// wrapDMInfo leaves the chat with yourself named after your own ghost.
-		if jid, err := waid.ParsePortalID(portal.ID); err == nil && !wa.IsOwnJID(jid) {
-			wa.queueDMRoomNameResync(portal.PortalKey, wa.getChatInfoSaved)
+		jid, err := waid.ParsePortalID(portal.ID)
+		if err != nil || wa.IsOwnJID(jid) {
+			continue
 		}
+		if portal.NameIsCustom {
+			if _, replace := wa.dmRoomName(ctx, jid, wa.dmGhostName(ctx, jid), portal.Name); !replace {
+				continue
+			}
+		}
+		wa.queueDMRoomNameResync(portal.PortalKey, wa.getChatInfoSaved)
 	}
 }
 
