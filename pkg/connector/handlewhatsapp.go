@@ -165,7 +165,7 @@ func (wa *WhatsAppClient) handleWAEvent(rawEvt any) (success bool) {
 		}
 		go wa.syncGhost(wa.JID.ToNonAD(), "push name setting", nil)
 	case *events.Contact:
-		go wa.syncGhost(evt.JID, "contact event", nil)
+		go wa.syncGhost(evt.JID, contactEventReason, nil)
 	case *events.PushName:
 		go wa.syncGhost(evt.JID, "push name event", nil)
 	case *events.BusinessName:
@@ -740,6 +740,7 @@ func (wa *WhatsAppClient) syncGhost(jid types.JID, reason string, pictureID *str
 	if err != nil {
 		log.Err(err).Msg("Failed to get user info")
 	} else {
+		wa.Main.Config.dropContactEventName(reason, userInfo)
 		ghost.UpdateInfo(ctx, userInfo)
 		log.Debug().Msg("Synced ghost info")
 		wa.syncAltGhostWithInfo(ctx, jid, ghost)

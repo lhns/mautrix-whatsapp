@@ -306,6 +306,25 @@ func (c *Config) contactNamesGhost(jid types.JID, phone string, contact types.Co
 	return c.FormatDisplayname(jid, phone, contact) != c.FormatDisplayname(jid, phone, unnamed)
 }
 
+const contactEventReason = "contact event"
+
+// dropContactEventName keeps a contact event from renaming the ghost when displayname_template
+// reads no address book name, the only thing such an event changes: the rest of the render is this
+// login's view of the contact, which can be stale.
+func (c *Config) dropContactEventName(reason string, ui *bridgev2.UserInfo) {
+	if reason != contactEventReason {
+		return
+	}
+	for _, base := range []types.ContactInfo{{}, {PushName: "push", BusinessName: "business"}} {
+		withAddressBook := base
+		withAddressBook.FirstName, withAddressBook.FullName = "first", "full"
+		if c.FormatDisplayname(types.EmptyJID, "+10", withAddressBook) != c.FormatDisplayname(types.EmptyJID, "+10", base) {
+			return
+		}
+	}
+	ui.Name = nil
+}
+
 func updateGhostLastSyncAt(_ context.Context, ghost *bridgev2.Ghost) bool {
 	meta := ghost.Metadata.(*waid.GhostMetadata)
 	forceSave := ResyncMinInterval < 24*time.Hour || time.Since(meta.LastSync.Time) > 24*time.Hour
