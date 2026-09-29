@@ -147,3 +147,50 @@ func TestHoldBackUnnamedConcurrentLogins(t *testing.T) {
 		}
 	}
 }
+
+func TestHoldBackContactEventName(t *testing.T) {
+	const oldName = "Old (WA)"
+	const realName = "Push (WA)"
+	tests := []struct {
+		name        string
+		template    string
+		reason      string
+		wantRenames bool
+	}{
+		{"contact event under a template without address book names", defaultTemplate, contactEventReason, false},
+		{"push name event still renames", defaultTemplate, "push name event", true},
+		{"business name event still renames", defaultTemplate, "business name event", true},
+		{"contact event under a template reading FullName", `{{or .PushName .FullName .Phone}} (WA)`, contactEventReason, true},
+		{"contact event under a template reading FirstName", `{{or .Short .Phone}}`, contactEventReason, true},
+		{"FullName read only behind a push name", `{{if .PushName}}{{.FullName}}{{end}} (WA)`, contactEventReason, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{DisplaynameTemplate: tc.template}
+			if err := cfg.PostProcess(); err != nil {
+				t.Fatalf("PostProcess() failed: %v", err)
+			}
+			wantName := oldName
+			if tc.wantRenames {
+				wantName = realName
+			}
+			for _, ghost := range []*bridgev2.Ghost{newTestGhost(oldName, true), newTestGhost("", false)} {
+				info := renderedInfo(realName, true)
+				info.Avatar = &bridgev2.Avatar{ID: "avatar"}
+				cfg.holdBackContactEventName(tc.reason, info)
+				if len(info.Identifiers) != 1 || info.Avatar == nil {
+					t.Errorf("holding back the name dropped identifiers or avatar: %+v", info)
+				}
+				want := wantName
+				if ghost.Name == "" {
+					// A ghost first seen through a contact event still gets a name.
+					want = realName
+				}
+				applyName(&sync.Mutex{}, ghost, info)
+				if ghost.Name != want {
+					t.Errorf("ghost name = %q, want %q", ghost.Name, want)
+				}
+			}
+		})
+	}
+}
