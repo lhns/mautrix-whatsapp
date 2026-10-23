@@ -170,6 +170,7 @@ func (wa *WhatsAppConnector) Start(ctx context.Context) error {
 			wa.Bridge.Log.Err(err).Msg("Failed to sync mismatching ghosts")
 		}
 	}()
+	go wa.healAltGhostNames(wa.Bridge.BackgroundCtx)
 	return nil
 }
 
