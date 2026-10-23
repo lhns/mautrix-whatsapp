@@ -172,7 +172,7 @@ func (wa *WhatsAppClient) doGhostResync(ctx context.Context, queue map[types.JID
 			continue
 		}
 		ghost.UpdateInfo(ctx, userInfo)
-		wa.syncAltGhostWithInfo(ctx, jid, ghost)
+		wa.syncAltGhostWithInfo(ctx, jid, ghost, userInfo)
 	}
 }
 
@@ -484,12 +484,14 @@ func (wa *WhatsAppClient) resyncContacts(forceAvatarSync, automatic bool) {
 		} else {
 			userInfo := wa.contactToUserInfo(ctx, jid, contact, "", forceAvatarSync || ghost.AvatarID == "")
 			ghost.UpdateInfo(ctx, userInfo)
-			wa.syncAltGhostWithInfo(ctx, jid, ghost)
+			wa.syncAltGhostWithInfo(ctx, jid, ghost, userInfo)
 		}
 	}
 }
 
-func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JID, mainGhost *bridgev2.Ghost) {
+// syncAltGhostWithInfo copies mainGhost's info, just updated from applied, to its LID or phone
+// number twin.
+func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JID, mainGhost *bridgev2.Ghost, applied *bridgev2.UserInfo) {
 	log := zerolog.Ctx(ctx)
 	var altJID types.JID
 	var err error
@@ -514,12 +516,20 @@ func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JI
 			Msg("Failed to get ghost for alternate JID")
 		return
 	}
-	ghost.UpdateInfo(ctx, makeInfoFromGhost(mainGhost))
+	ghost.UpdateInfo(ctx, altGhostInfo(mainGhost, applied.Name != nil))
 	log.Debug().
 		Stringer("jid", jid).
 		Stringer("alternate_jid", altJID).
 		Msg("Synced alternate ghost with info")
 	go wa.syncRemoteProfile(ctx, ghost)
+}
+
+// altGhostInfo is mainGhost's info for its twin. Unless the sync was named, mainGhost's name may be
+// a nameless render, which must not replace a name the twin got from another login.
+func altGhostInfo(mainGhost *bridgev2.Ghost, named bool) *bridgev2.UserInfo {
+	info := makeInfoFromGhost(mainGhost)
+	holdBackUnnamed(info, named)
+	return info
 }
 
 func makeInfoFromGhost(ghost *bridgev2.Ghost) *bridgev2.UserInfo {
