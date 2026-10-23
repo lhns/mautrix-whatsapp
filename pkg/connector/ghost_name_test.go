@@ -59,10 +59,12 @@ func TestContactNamesGhost(t *testing.T) {
 // nameRecorder is the part of MatrixAPI that Ghost.UpdateName uses.
 type nameRecorder struct {
 	bridgev2.MatrixAPI
-	fail bool
+	fail   bool
+	pushes int
 }
 
 func (r *nameRecorder) SetDisplayName(context.Context, string) error {
+	r.pushes++
 	if r.fail {
 		return errors.New("homeserver unavailable")
 	}
@@ -145,6 +147,45 @@ func TestHoldBackUnnamedConcurrentLogins(t *testing.T) {
 		if ghost.Name != realName {
 			t.Fatalf("run %d: ghost name = %q, want %q", i, ghost.Name, realName)
 		}
+	}
+}
+
+func TestAltGhostInfo(t *testing.T) {
+	const fallback = "+10000000001 (WA)"
+	const realName = "Push (WA)"
+	tests := []struct {
+		name        string
+		mainName    string
+		named       bool
+		twinName    string
+		twinSet     bool
+		wantName    string
+		wantNameSet bool
+		wantPushes  int
+	}{
+		{"a nameless sync keeps the twin's name", fallback, false, realName, true, realName, true, 0},
+		{"a named sync renames the twin", "Other (WA)", true, realName, true, "Other (WA)", true, 1},
+		{"a nameless sync names a new twin", fallback, false, "", false, fallback, true, 1},
+		{"a nameless main ghost never blanks the twin", "", false, realName, true, realName, true, 0},
+		{"a nameless sync retries the twin's failed push", fallback, false, realName, false, realName, true, 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			main := newTestGhost(tc.mainName, true)
+			main.AvatarID = "avatar"
+			twin := newTestGhost(tc.twinName, tc.twinSet)
+			info := altGhostInfo(main, tc.named)
+			if info.Avatar == nil || info.Avatar.ID != "avatar" {
+				t.Errorf("the avatar is no longer synced: %+v", info.Avatar)
+			}
+			applyName(&sync.Mutex{}, twin, info)
+			if twin.Name != tc.wantName || twin.NameSet != tc.wantNameSet {
+				t.Errorf("twin name = %q (set %v), want %q (set %v)", twin.Name, twin.NameSet, tc.wantName, tc.wantNameSet)
+			}
+			if pushes := twin.Intent.(*nameRecorder).pushes; pushes != tc.wantPushes {
+				t.Errorf("displayname pushes = %d, want %d", pushes, tc.wantPushes)
+			}
+		})
 	}
 }
 
