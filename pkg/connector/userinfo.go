@@ -173,7 +173,7 @@ func (wa *WhatsAppClient) doGhostResync(ctx context.Context, queue map[types.JID
 			continue
 		}
 		ghost.UpdateInfo(ctx, userInfo)
-		wa.syncAltGhostWithInfo(ctx, jid, ghost)
+		wa.syncAltGhostWithInfo(ctx, jid, ghost, userInfo)
 	}
 }
 
@@ -292,6 +292,7 @@ func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, 
 // holdBackUnnamed stops a displayname that no contact name contributed to from replacing the
 // ghost's name: ghosts are shared by every login, contact stores are not. The check runs in
 // ExtraUpdates, under the ghost's syncLock, so a concurrent named update cannot be overwritten.
+// Afterwards ui.Name is nil exactly when the sync carried no contact name.
 func holdBackUnnamed(ui *bridgev2.UserInfo, named bool) {
 	if named || ui.Name == nil {
 		return
@@ -317,21 +318,24 @@ func (c *Config) contactNamesGhost(jid types.JID, phone string, contact types.Co
 
 const contactEventReason = "contact event"
 
-// dropContactEventName keeps a contact event from renaming the ghost when displayname_template
+// holdBackContactEventName treats a contact event's render as nameless when displayname_template
 // reads no address book name, the only thing such an event changes: the rest of the render is this
 // login's view of the contact, which can be stale.
-func (c *Config) dropContactEventName(reason string, ui *bridgev2.UserInfo) {
-	if reason != contactEventReason {
-		return
+func (c *Config) holdBackContactEventName(reason string, ui *bridgev2.UserInfo) {
+	if reason == contactEventReason && !c.readsAddressBook() {
+		holdBackUnnamed(ui, false)
 	}
+}
+
+func (c *Config) readsAddressBook() bool {
 	for _, base := range []types.ContactInfo{{}, {PushName: "push", BusinessName: "business"}} {
 		withAddressBook := base
 		withAddressBook.FirstName, withAddressBook.FullName = "first", "full"
 		if c.FormatDisplayname(types.EmptyJID, "+10", withAddressBook) != c.FormatDisplayname(types.EmptyJID, "+10", base) {
-			return
+			return true
 		}
 	}
-	ui.Name = nil
+	return false
 }
 
 func updateGhostLastSyncAt(_ context.Context, ghost *bridgev2.Ghost) bool {
@@ -489,7 +493,7 @@ func (wa *WhatsAppClient) resyncContacts(forceAvatarSync, automatic bool) {
 		} else {
 			userInfo := wa.contactToUserInfo(ctx, jid, contact, "", forceAvatarSync || ghost.AvatarID == "")
 			ghost.UpdateInfo(ctx, userInfo)
-			wa.syncAltGhostWithInfo(ctx, jid, ghost)
+			wa.syncAltGhostWithInfo(ctx, jid, ghost, userInfo)
 			wa.updateDMPortalNames(ctx, jid)
 		}
 	}
@@ -575,7 +579,9 @@ func (wa *WhatsAppClient) queueDMRoomNameResync(key networkid.PortalKey, getChat
 	})
 }
 
-func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JID, mainGhost *bridgev2.Ghost) {
+// syncAltGhostWithInfo copies mainGhost's info, just updated from applied, to its LID or phone
+// number twin.
+func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JID, mainGhost *bridgev2.Ghost, applied *bridgev2.UserInfo) {
 	log := zerolog.Ctx(ctx)
 	var altJID types.JID
 	var err error
@@ -600,12 +606,20 @@ func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JI
 			Msg("Failed to get ghost for alternate JID")
 		return
 	}
-	ghost.UpdateInfo(ctx, makeInfoFromGhost(mainGhost))
+	ghost.UpdateInfo(ctx, altGhostInfo(mainGhost, applied.Name != nil))
 	log.Debug().
 		Stringer("jid", jid).
 		Stringer("alternate_jid", altJID).
 		Msg("Synced alternate ghost with info")
 	go wa.syncRemoteProfile(ctx, ghost)
+}
+
+// altGhostInfo is mainGhost's info for its twin. Unless the sync was named, mainGhost's name may be
+// a nameless render, which must not replace a name the twin got from another login.
+func altGhostInfo(mainGhost *bridgev2.Ghost, named bool) *bridgev2.UserInfo {
+	info := makeInfoFromGhost(mainGhost)
+	holdBackUnnamed(info, named)
+	return info
 }
 
 func makeInfoFromGhost(ghost *bridgev2.Ghost) *bridgev2.UserInfo {
