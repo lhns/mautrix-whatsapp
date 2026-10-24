@@ -767,10 +767,10 @@ func (wa *WhatsAppClient) syncGhost(jid types.JID, reason string, pictureID *str
 	if err != nil {
 		log.Err(err).Msg("Failed to get user info")
 	} else {
-		wa.Main.Config.dropContactEventName(reason, userInfo)
+		wa.Main.Config.holdBackContactEventName(reason, userInfo)
 		ghost.UpdateInfo(ctx, userInfo)
 		log.Debug().Msg("Synced ghost info")
-		wa.syncAltGhostWithInfo(ctx, jid, ghost)
+		wa.syncAltGhostWithInfo(ctx, jid, ghost, userInfo)
 		wa.updateDMPortalNames(ctx, jid)
 	}
 	go wa.syncRemoteProfile(ctx, ghost)

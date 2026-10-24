@@ -59,10 +59,12 @@ func TestContactNamesGhost(t *testing.T) {
 // nameRecorder is the part of MatrixAPI that Ghost.UpdateName uses.
 type nameRecorder struct {
 	bridgev2.MatrixAPI
-	fail bool
+	fail   bool
+	pushes int
 }
 
 func (r *nameRecorder) SetDisplayName(context.Context, string) error {
+	r.pushes++
 	if r.fail {
 		return errors.New("homeserver unavailable")
 	}
@@ -148,12 +150,53 @@ func TestHoldBackUnnamedConcurrentLogins(t *testing.T) {
 	}
 }
 
-func TestDropContactEventName(t *testing.T) {
+func TestAltGhostInfo(t *testing.T) {
+	const fallback = "+10000000001 (WA)"
+	const realName = "Push (WA)"
 	tests := []struct {
-		name     string
-		template string
-		reason   string
-		wantName bool
+		name        string
+		mainName    string
+		named       bool
+		twinName    string
+		twinSet     bool
+		wantName    string
+		wantNameSet bool
+		wantPushes  int
+	}{
+		{"a nameless sync keeps the twin's name", fallback, false, realName, true, realName, true, 0},
+		{"a named sync renames the twin", "Other (WA)", true, realName, true, "Other (WA)", true, 1},
+		{"a nameless sync names a new twin", fallback, false, "", false, fallback, true, 1},
+		{"a nameless main ghost never blanks the twin", "", false, realName, true, realName, true, 0},
+		{"a nameless sync retries the twin's failed push", fallback, false, realName, false, realName, true, 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			main := newTestGhost(tc.mainName, true)
+			main.AvatarID = "avatar"
+			twin := newTestGhost(tc.twinName, tc.twinSet)
+			info := altGhostInfo(main, tc.named)
+			if info.Avatar == nil || info.Avatar.ID != "avatar" {
+				t.Errorf("the avatar is no longer synced: %+v", info.Avatar)
+			}
+			applyName(&sync.Mutex{}, twin, info)
+			if twin.Name != tc.wantName || twin.NameSet != tc.wantNameSet {
+				t.Errorf("twin name = %q (set %v), want %q (set %v)", twin.Name, twin.NameSet, tc.wantName, tc.wantNameSet)
+			}
+			if pushes := twin.Intent.(*nameRecorder).pushes; pushes != tc.wantPushes {
+				t.Errorf("displayname pushes = %d, want %d", pushes, tc.wantPushes)
+			}
+		})
+	}
+}
+
+func TestHoldBackContactEventName(t *testing.T) {
+	const oldName = "Old (WA)"
+	const realName = "Push (WA)"
+	tests := []struct {
+		name        string
+		template    string
+		reason      string
+		wantRenames bool
 	}{
 		{"contact event under a template without address book names", defaultTemplate, contactEventReason, false},
 		{"push name event still renames", defaultTemplate, "push name event", true},
@@ -168,30 +211,27 @@ func TestDropContactEventName(t *testing.T) {
 			if err := cfg.PostProcess(); err != nil {
 				t.Fatalf("PostProcess() failed: %v", err)
 			}
-			info := renderedInfo("Push (WA)", true)
-			info.Avatar = &bridgev2.Avatar{ID: "avatar"}
-			cfg.dropContactEventName(tc.reason, info)
-			if (info.Name != nil) != tc.wantName {
-				t.Errorf("Name = %v, want kept %v", info.Name, tc.wantName)
+			wantName := oldName
+			if tc.wantRenames {
+				wantName = realName
 			}
-			if len(info.Identifiers) != 1 || info.Avatar == nil {
-				t.Errorf("dropping the name dropped identifiers or avatar: %+v", info)
+			for _, ghost := range []*bridgev2.Ghost{newTestGhost(oldName, true), newTestGhost("", false)} {
+				info := renderedInfo(realName, true)
+				info.Avatar = &bridgev2.Avatar{ID: "avatar"}
+				cfg.holdBackContactEventName(tc.reason, info)
+				if len(info.Identifiers) != 1 || info.Avatar == nil {
+					t.Errorf("holding back the name dropped identifiers or avatar: %+v", info)
+				}
+				want := wantName
+				if ghost.Name == "" {
+					// A ghost first seen through a contact event still gets a name.
+					want = realName
+				}
+				applyName(&sync.Mutex{}, ghost, info)
+				if ghost.Name != want {
+					t.Errorf("ghost name = %q, want %q", ghost.Name, want)
+				}
 			}
 		})
-	}
-}
-
-// A ghost first seen through a contact event still gets the fallback name.
-func TestDropContactEventNameKeepsFallback(t *testing.T) {
-	cfg := &Config{DisplaynameTemplate: defaultTemplate}
-	if err := cfg.PostProcess(); err != nil {
-		t.Fatalf("PostProcess() failed: %v", err)
-	}
-	ghost := newTestGhost("", false)
-	info := renderedInfo("+10000000001 (WA)", false)
-	cfg.dropContactEventName(contactEventReason, info)
-	applyName(&sync.Mutex{}, ghost, info)
-	if ghost.Name != "+10000000001 (WA)" {
-		t.Errorf("ghost name = %q, want the fallback", ghost.Name)
 	}
 }

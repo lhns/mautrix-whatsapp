@@ -161,7 +161,7 @@ func TestWrapDMInfoWithoutTemplate(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			wa := &WhatsAppClient{
-				JID:       types.NewJID(me, types.DefaultUserServer),
+				JID: types.NewJID(me, types.DefaultUserServer),
 				// A known (empty) blocklist keeps wrapDMInfo from resyncing it.
 				UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{ID: me, Metadata: &waid.UserLoginMetadata{Blocklist: &types.Blocklist{}}}},
 				Main: &WhatsAppConnector{
