@@ -235,3 +235,18 @@ func TestHoldBackContactEventName(t *testing.T) {
 		})
 	}
 }
+
+// A ghost first seen through a contact event with a nameless render still gets the fallback.
+func TestHoldBackContactEventNameKeepsFallback(t *testing.T) {
+	cfg := &Config{DisplaynameTemplate: defaultTemplate}
+	if err := cfg.PostProcess(); err != nil {
+		t.Fatalf("PostProcess() failed: %v", err)
+	}
+	ghost := newTestGhost("", false)
+	info := renderedInfo("+10000000001 (WA)", false)
+	cfg.holdBackContactEventName(contactEventReason, info)
+	applyName(&sync.Mutex{}, ghost, info)
+	if ghost.Name != "+10000000001 (WA)" {
+		t.Errorf("ghost name = %q, want the fallback", ghost.Name)
+	}
+}
