@@ -419,7 +419,7 @@ func (wl *WALogin) onLoginComplete(ctx context.Context) (*bridgev2.LoginStep, er
 		if err != nil {
 			wl.Log.Warn().Err(err).Msg("Prekey upload wait failed")
 		}
-		go c.syncGhost(c.JID.ToNonAD(), "login", ptr.Ptr(""))
+		go c.syncGhost(c.JID.ToNonAD(), "login", ptr.Ptr(""), nil)
 	}
 
 	return &bridgev2.LoginStep{

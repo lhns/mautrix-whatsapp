@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"regexp"
+	"slices"
 	"strconv"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"go.mau.fi/util/ptr"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
@@ -285,7 +287,8 @@ func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, 
 	} else if fetchAvatar {
 		ui.ExtraUpdates = bridgev2.MergeExtraUpdaters(ui.ExtraUpdates, wa.fetchGhostAvatar)
 	}
-	holdBackUnnamed(ui, wa.Main.Config.contactNamesGhost(jid, phone, contact))
+	// A named ghost keeps its name here; only nameEvent renames it.
+	holdBackUnnamed(ui, false)
 	return ui
 }
 
@@ -316,26 +319,55 @@ func (c *Config) contactNamesGhost(jid types.JID, phone string, contact types.Co
 	return c.FormatDisplayname(jid, phone, contact) != c.FormatDisplayname(jid, phone, unnamed)
 }
 
-const contactEventReason = "contact event"
+// nameEvent is a push or business name change, the only thing that renames a named ghost. Ghosts
+// are shared by every login, contact stores are not, so any other render may carry a stale name.
+type nameEvent struct {
+	jids []types.JID
+	set  func(*types.ContactInfo)
+}
 
-// holdBackContactEventName treats a contact event's render as nameless when displayname_template
-// reads no address book name, the only thing such an event changes: the rest of the render is this
-// login's view of the contact, which can be stale.
-func (c *Config) holdBackContactEventName(reason string, ui *bridgev2.UserInfo) {
-	if reason == contactEventReason && !c.readsAddressBook() {
-		holdBackUnnamed(ui, false)
+// pushNameEvent covers both the phone and LID form of the contact, as the ghost may use either.
+func pushNameEvent(evt *events.PushName) nameEvent {
+	return nameEvent{
+		jids: nonEmptyJIDs(evt.JID, evt.JIDAlt),
+		set:  func(c *types.ContactInfo) { c.PushName = evt.NewPushName },
 	}
 }
 
-func (c *Config) readsAddressBook() bool {
-	for _, base := range []types.ContactInfo{{}, {PushName: "push", BusinessName: "business"}} {
-		withAddressBook := base
-		withAddressBook.FirstName, withAddressBook.FullName = "first", "full"
-		if c.FormatDisplayname(types.EmptyJID, "+10", withAddressBook) != c.FormatDisplayname(types.EmptyJID, "+10", base) {
-			return true
+func businessNameEvent(evt *events.BusinessName) nameEvent {
+	return nameEvent{
+		jids: nonEmptyJIDs(evt.JID),
+		set:  func(c *types.ContactInfo) { c.BusinessName = evt.NewBusinessName },
+	}
+}
+
+func nonEmptyJIDs(jids ...types.JID) []types.JID {
+	var out []types.JID
+	for _, jid := range jids {
+		if !jid.IsEmpty() && !slices.Contains(out, jid) {
+			out = append(out, jid)
 		}
 	}
-	return false
+	return out
+}
+
+// applyNameEvent renames from the event's name rather than the contact store's, which resolveContact
+// may have overridden with the alternate identity's (possibly stale) name.
+func (wa *WhatsAppClient) applyNameEvent(ctx context.Context, jid types.JID, ui *bridgev2.UserInfo, ev nameEvent) error {
+	contact, err := wa.GetStore().Contacts.GetContact(ctx, jid)
+	if err != nil {
+		return err
+	}
+	resolved, phone := wa.resolveContact(ctx, jid, contact)
+	wa.Main.Config.applyNameEvent(ui, jid, phone, resolved, ev)
+	return nil
+}
+
+func (c *Config) applyNameEvent(ui *bridgev2.UserInfo, jid types.JID, phone string, resolved types.ContactInfo, ev nameEvent) {
+	ev.set(&resolved)
+	if c.contactNamesGhost(jid, phone, resolved) {
+		ui.Name = ptr.Ptr(c.FormatDisplayname(jid, phone, resolved))
+	}
 }
 
 func updateGhostLastSyncAt(_ context.Context, ghost *bridgev2.Ghost) bool {
