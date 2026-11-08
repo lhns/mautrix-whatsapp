@@ -192,7 +192,10 @@ func (wa *WhatsAppClient) getUserInfo(ctx context.Context, jid types.JID, avatar
 	return wa.contactToUserInfo(ctx, jid, contact, avatarID, fetchAvatar), nil
 }
 
-func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, contact types.ContactInfo, avatarID string, fetchAvatar bool) *bridgev2.UserInfo {
+// resolveContact merges in what the alternate (LID or phone number) identity knows about a
+// contact and derives the phone number, so a contact recorded under only one of the two still
+// resolves.
+func (wa *WhatsAppClient) resolveContact(ctx context.Context, jid types.JID, contact types.ContactInfo) (types.ContactInfo, string) {
 	if jid == types.MetaAIJID && contact.PushName == jid.User {
 		contact.PushName = "Meta AI"
 	} else if jid == types.LegacyPSAJID || jid == types.PSAJID {
@@ -260,6 +263,11 @@ func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, 
 	} else if altJID.Server == types.DefaultUserServer {
 		phone = "+" + altJID.User
 	}
+	return contact, phone
+}
+
+func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, contact types.ContactInfo, avatarID string, fetchAvatar bool) *bridgev2.UserInfo {
+	contact, phone := wa.resolveContact(ctx, jid, contact)
 	ui := &bridgev2.UserInfo{
 		Name:         ptr.Ptr(wa.Main.Config.FormatDisplayname(jid, phone, contact)),
 		IsBot:        ptr.Ptr(jid.IsBot()),
@@ -275,7 +283,8 @@ func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, 
 	} else if fetchAvatar {
 		ui.ExtraUpdates = bridgev2.MergeExtraUpdaters(ui.ExtraUpdates, wa.fetchGhostAvatar)
 	}
-	holdBackUnnamed(ui, wa.Main.Config.contactNamesGhost(jid, phone, contact))
+	// A named ghost keeps its name here; only nameEvent renames it.
+	holdBackUnnamed(ui, false)
 	return ui
 }
 
