@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"regexp"
 	"slices"
@@ -174,8 +175,7 @@ func (wa *WhatsAppClient) doGhostResync(ctx context.Context, queue map[types.JID
 			log.Err(err).Stringer("jid", jid).Msg("Failed to get user info for puppet in background sync")
 			continue
 		}
-		ghost.UpdateInfo(ctx, userInfo)
-		wa.syncAltGhostWithInfo(ctx, jid, ghost, userInfo)
+		wa.syncAltGhostWithInfo(ctx, jid, updateGhostInfo(ctx, ghost, userInfo), userInfo)
 	}
 }
 
@@ -288,39 +288,49 @@ func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, 
 		ui.ExtraUpdates = bridgev2.MergeExtraUpdaters(ui.ExtraUpdates, wa.fetchGhostAvatar)
 	}
 	// A named ghost keeps its name here; only nameEvent renames it.
-	holdBackUnnamed(ui, false)
+	holdBackUnnamed(ui, false, wa.Main.Config.namelessName(jid, phone, contact))
 	return ui
 }
 
-// holdBackUnnamed stops a displayname that no contact name contributed to from replacing the
-// ghost's name: ghosts are shared by every login, contact stores are not. The check runs in
-// ExtraUpdates, under the ghost's syncLock, so a concurrent named update cannot be overwritten.
-// Afterwards ui.Name is nil exactly when the sync carried no contact name.
-func holdBackUnnamed(ui *bridgev2.UserInfo, named bool) {
+// Ghosts are shared by every login, but contact stores are per login, so a render from one login
+// may carry a stale or missing name.
+
+// holdBackUnnamed makes ui's name, unless named, apply only to a ghost without a real name: one
+// that is empty or still shows nameless, the render without any contact name. It runs in
+// ExtraUpdates, under the ghost's syncLock, so a concurrent named update is not overwritten.
+// Afterwards a nil ui.Name means the sync must not replace a real name.
+func holdBackUnnamed(ui *bridgev2.UserInfo, named bool, nameless string) {
 	if named || ui.Name == nil {
 		return
 	}
 	fallback := *ui.Name
 	ui.Name = nil
 	ui.ExtraUpdates = bridgev2.MergeExtraUpdaters(ui.ExtraUpdates, func(ctx context.Context, ghost *bridgev2.Ghost) bool {
-		if ghost.Name != "" && ghost.NameSet {
+		if ghost.Name != "" && ghost.NameSet && ghost.Name != nameless {
 			return false
 		}
-		// Retries pushing an existing name that failed, else sets the fallback on a nameless ghost.
-		return ghost.UpdateName(ctx, cmp.Or(ghost.Name, fallback))
+		// A phone-number-only name counts as none. Else retries pushing a name that failed.
+		current := ghost.Name
+		if current == nameless {
+			current = ""
+		}
+		return ghost.UpdateName(ctx, cmp.Or(current, fallback))
 	})
 }
 
-// contactNamesGhost reports whether any contact name field changed the rendered displayname,
-// without assuming which fields the template reads.
-func (c *Config) contactNamesGhost(jid types.JID, phone string, contact types.ContactInfo) bool {
-	unnamed := contact
-	unnamed.FirstName, unnamed.FullName, unnamed.PushName, unnamed.BusinessName = "", "", "", ""
-	return c.FormatDisplayname(jid, phone, contact) != c.FormatDisplayname(jid, phone, unnamed)
+// namelessName renders contact without any contact name field, without assuming which fields the
+// template reads.
+func (c *Config) namelessName(jid types.JID, phone string, contact types.ContactInfo) string {
+	contact.FirstName, contact.FullName, contact.PushName, contact.BusinessName = "", "", "", ""
+	return c.FormatDisplayname(jid, phone, contact)
 }
 
-// nameEvent is a push or business name change, the only thing that renames a named ghost. Ghosts
-// are shared by every login, contact stores are not, so any other render may carry a stale name.
+// contactNamesGhost reports whether any contact name field changed the rendered displayname.
+func (c *Config) contactNamesGhost(jid types.JID, phone string, contact types.ContactInfo) bool {
+	return c.FormatDisplayname(jid, phone, contact) != c.namelessName(jid, phone, contact)
+}
+
+// nameEvent is a push or business name change, the only thing that renames a named ghost.
 type nameEvent struct {
 	jids []types.JID
 	set  func(*types.ContactInfo)
@@ -351,6 +361,11 @@ func nonEmptyJIDs(jids ...types.JID) []types.JID {
 	return out
 }
 
+// applyNameEvent and resolveContact render this login's FullName and FirstName too, so
+// displayname_template must not read address book fields: they would rename from a stale contact.
+//
+// A PushName event renders with the stored BusinessName, which wins under the default template.
+//
 // applyNameEvent renames from the event's name rather than the contact store's, which resolveContact
 // may have overridden with the alternate identity's (possibly stale) name.
 func (wa *WhatsAppClient) applyNameEvent(ctx context.Context, jid types.JID, ui *bridgev2.UserInfo, ev nameEvent) error {
@@ -368,6 +383,27 @@ func (c *Config) applyNameEvent(ui *bridgev2.UserInfo, jid types.JID, phone stri
 	if c.contactNamesGhost(jid, phone, resolved) {
 		ui.Name = ptr.Ptr(c.FormatDisplayname(jid, phone, resolved))
 	}
+}
+
+// altGhostInfo is the main ghost's snapshot as info for its LID or phone number twin; unless named,
+// the twin keeps its real name, as the main ghost's may be a nameless render. nameless is the
+// twin's own nameless render.
+func altGhostInfo(main *bridgev2.UserInfo, named bool, nameless string) *bridgev2.UserInfo {
+	info := *main
+	holdBackUnnamed(&info, named, nameless)
+	return &info
+}
+
+// updateGhostInfo updates ghost and returns a snapshot of it taken under its lock, so a
+// concurrent sync cannot change what is copied to the twin.
+func updateGhostInfo(ctx context.Context, ghost *bridgev2.Ghost, info *bridgev2.UserInfo) *bridgev2.UserInfo {
+	var snapshot *bridgev2.UserInfo
+	info.ExtraUpdates = bridgev2.MergeExtraUpdaters(info.ExtraUpdates, func(_ context.Context, g *bridgev2.Ghost) bool {
+		snapshot = makeInfoFromGhost(g)
+		return false
+	})
+	ghost.UpdateInfo(ctx, info)
+	return snapshot
 }
 
 func updateGhostLastSyncAt(_ context.Context, ghost *bridgev2.Ghost) bool {
@@ -524,8 +560,7 @@ func (wa *WhatsAppClient) resyncContacts(forceAvatarSync, automatic bool) {
 			log.Err(err).Stringer("jid", jid).Msg("Failed to get contact info")
 		} else {
 			userInfo := wa.contactToUserInfo(ctx, jid, contact, "", forceAvatarSync || ghost.AvatarID == "")
-			ghost.UpdateInfo(ctx, userInfo)
-			wa.syncAltGhostWithInfo(ctx, jid, ghost, userInfo)
+			wa.syncAltGhostWithInfo(ctx, jid, updateGhostInfo(ctx, ghost, userInfo), userInfo)
 			wa.updateDMPortalNames(ctx, jid)
 		}
 	}
@@ -611,9 +646,9 @@ func (wa *WhatsAppClient) queueDMRoomNameResync(key networkid.PortalKey, getChat
 	})
 }
 
-// syncAltGhostWithInfo copies mainGhost's info, just updated from applied, to its LID or phone
-// number twin.
-func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JID, mainGhost *bridgev2.Ghost, applied *bridgev2.UserInfo) {
+// syncAltGhostWithInfo copies main, a snapshot of the ghost just updated from applied, to its LID
+// or phone number twin.
+func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JID, main, applied *bridgev2.UserInfo) {
 	log := zerolog.Ctx(ctx)
 	var altJID types.JID
 	var err error
@@ -638,7 +673,8 @@ func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JI
 			Msg("Failed to get ghost for alternate JID")
 		return
 	}
-	ghost.UpdateInfo(ctx, altGhostInfo(mainGhost, applied.Name != nil))
+	nameless := wa.Main.Config.namelessName(altJID, phoneOf(jid, altJID), types.ContactInfo{})
+	ghost.UpdateInfo(ctx, altGhostInfo(main, applied.Name != nil, nameless))
 	log.Debug().
 		Stringer("jid", jid).
 		Stringer("alternate_jid", altJID).
@@ -646,25 +682,29 @@ func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JI
 	go wa.syncRemoteProfile(ctx, ghost)
 }
 
-// altGhostInfo is mainGhost's info for its twin. Unless the sync was named, mainGhost's name may be
-// a nameless render, which must not replace a name the twin got from another login.
-func altGhostInfo(mainGhost *bridgev2.Ghost, named bool) *bridgev2.UserInfo {
-	info := makeInfoFromGhost(mainGhost)
-	holdBackUnnamed(info, named)
-	return info
+// phoneOf is the phone number of whichever of the two JIDs is a phone number JID.
+func phoneOf(jid, altJID types.JID) string {
+	if jid.Server == types.DefaultUserServer {
+		return "+" + jid.User
+	} else if altJID.Server == types.DefaultUserServer {
+		return "+" + altJID.User
+	}
+	return ""
 }
 
+// makeInfoFromGhost copies the ghost's fields, so the result stays valid when the ghost changes.
 func makeInfoFromGhost(ghost *bridgev2.Ghost) *bridgev2.UserInfo {
+	name, isBot := ghost.Name, ghost.IsBot
 	return &bridgev2.UserInfo{
 		Identifiers: ghost.Identifiers,
-		Name:        &ghost.Name,
+		Name:        &name,
 		Avatar: &bridgev2.Avatar{
 			ID:     ghost.AvatarID,
 			Remove: ghost.AvatarID == "" || ghost.AvatarMXC == "",
 			MXC:    ghost.AvatarMXC,
 			Hash:   ghost.AvatarHash,
 		},
-		IsBot:        &ghost.IsBot,
-		ExtraProfile: ghost.ExtraProfile,
+		IsBot:        &isBot,
+		ExtraProfile: maps.Clone(ghost.ExtraProfile),
 	}
 }

@@ -262,7 +262,8 @@ func (wa *WhatsAppConnector) syncMismatchingGhosts(ctx context.Context) error {
 			Str("pn_ghost_name", pnGhost.Name).
 			Str("lid_ghost_name", lidGhost.Name).
 			Msg("Updating LID ghost avatar")
-		lidGhost.UpdateInfo(ctx, makeInfoFromGhost(pnGhost))
+		lidGhost.UpdateInfo(ctx, altGhostInfo(makeInfoFromGhost(pnGhost), false,
+			wa.Config.namelessName(lid, "+"+pn.User, types.ContactInfo{})))
 	}
 	wa.Bridge.DB.KV.Set(ctx, "whatsapp_lid_avatars_resynced", "true")
 	return nil
