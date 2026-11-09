@@ -11,12 +11,12 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 )
 
-// Ghosts are shared by every login, but contact stores are per login: a sync whose rendered
-// displayname carries no contact name must not replace a name another login set.
+// Ghosts are shared by every login, but contact stores are per login, so a render from one login
+// may carry a stale or missing name.
 
-// holdBackUnnamed stops a displayname that no contact name contributed to from replacing the
-// ghost's name. The check runs in ExtraUpdates, under the ghost's syncLock, so a concurrent named
-// update is not overwritten. Afterwards ui.Name is nil exactly when the sync carried no contact name.
+// holdBackUnnamed makes ui's name, unless named, apply only to a ghost without a name. It runs in
+// ExtraUpdates, under the ghost's syncLock, so a concurrent named update is not overwritten.
+// Afterwards a nil ui.Name means the sync must not replace an existing name.
 func holdBackUnnamed(ui *bridgev2.UserInfo, named bool) {
 	if named || ui.Name == nil {
 		return
@@ -40,8 +40,7 @@ func (c *Config) contactNamesGhost(jid types.JID, phone string, contact types.Co
 	return c.FormatDisplayname(jid, phone, contact) != c.FormatDisplayname(jid, phone, unnamed)
 }
 
-// nameEvent is a push or business name change, the only thing that renames a named ghost. Ghosts
-// are shared by every login, contact stores are not, so any other render may carry a stale name.
+// nameEvent is a push or business name change, the only thing that renames a named ghost.
 type nameEvent struct {
 	jids []types.JID
 	set  func(*types.ContactInfo)
@@ -91,8 +90,8 @@ func (c *Config) applyNameEvent(ui *bridgev2.UserInfo, jid types.JID, phone stri
 	}
 }
 
-// altGhostInfo is mainGhost's info for its LID or phone number twin. Unless the sync was named,
-// mainGhost's name may be a nameless render.
+// altGhostInfo is mainGhost's info for its LID or phone number twin; unless named, the twin keeps
+// its name, as mainGhost's may be a nameless render.
 func altGhostInfo(mainGhost *bridgev2.Ghost, named bool) *bridgev2.UserInfo {
 	info := makeInfoFromGhost(mainGhost)
 	holdBackUnnamed(info, named)
