@@ -165,13 +165,13 @@ func (wa *WhatsAppClient) handleWAEvent(rawEvt any) (success bool) {
 		if err != nil {
 			log.Err(err).Msg("Failed to update push name in store")
 		}
-		go wa.syncGhost(wa.JID.ToNonAD(), "push name setting", nil)
+		go wa.syncGhost(wa.JID.ToNonAD(), "push name setting", nil, nil)
 	case *events.Contact:
-		go wa.syncGhost(evt.JID, contactEventReason, nil)
+		go wa.syncGhost(evt.JID, "contact event", nil, nil)
 	case *events.PushName:
-		go wa.syncGhost(evt.JID, "push name event", nil)
+		go wa.syncNameEvent(pushNameEvent(evt), "push name event")
 	case *events.BusinessName:
-		go wa.syncGhost(evt.JID, "business name event", nil)
+		go wa.syncNameEvent(businessNameEvent(evt), "business name event")
 
 	case *events.Connected:
 		log.Debug().Msg("Connected to WhatsApp socket")
@@ -747,7 +747,15 @@ func (wa *WhatsAppClient) handleWAMarkChatAsRead(ctx context.Context, evt *event
 	}).Success
 }
 
-func (wa *WhatsAppClient) syncGhost(jid types.JID, reason string, pictureID *string) {
+// syncNameEvent syncs the event's JIDs in order, so two quick renames cannot overtake each other.
+func (wa *WhatsAppClient) syncNameEvent(ev nameEvent, reason string) {
+	for _, jid := range ev.jids {
+		wa.syncGhost(jid, reason, nil, &ev)
+	}
+}
+
+// syncGhost updates a ghost from this login's contact store. Only a non-nil ev may rename a named ghost.
+func (wa *WhatsAppClient) syncGhost(jid types.JID, reason string, pictureID *string, ev *nameEvent) {
 	log := wa.UserLogin.Log.With().
 		Str("action", "sync ghost").
 		Str("reason", reason).
@@ -767,10 +775,14 @@ func (wa *WhatsAppClient) syncGhost(jid types.JID, reason string, pictureID *str
 	if err != nil {
 		log.Err(err).Msg("Failed to get user info")
 	} else {
-		wa.Main.Config.holdBackContactEventName(reason, userInfo)
-		ghost.UpdateInfo(ctx, userInfo)
+		if ev != nil {
+			if err = wa.applyNameEvent(ctx, jid, userInfo, *ev); err != nil {
+				log.Err(err).Msg("Failed to apply name event")
+			}
+		}
+		snapshot := updateGhostInfo(ctx, ghost, userInfo)
 		log.Debug().Msg("Synced ghost info")
-		wa.syncAltGhostWithInfo(ctx, jid, ghost, userInfo)
+		wa.syncAltGhostWithInfo(ctx, jid, snapshot, userInfo)
 		wa.updateDMPortalNames(ctx, jid)
 	}
 	go wa.syncRemoteProfile(ctx, ghost)
@@ -778,7 +790,7 @@ func (wa *WhatsAppClient) syncGhost(jid types.JID, reason string, pictureID *str
 
 func (wa *WhatsAppClient) handleWAPictureUpdate(ctx context.Context, evt *events.Picture) bool {
 	if evt.JID.Server == types.DefaultUserServer || evt.JID.Server == types.HiddenUserServer || evt.JID.Server == types.BotServer {
-		go wa.syncGhost(evt.JID, "picture event", &evt.PictureID)
+		go wa.syncGhost(evt.JID, "picture event", &evt.PictureID, nil)
 		return true
 	} else {
 		var changes bridgev2.ChatInfo

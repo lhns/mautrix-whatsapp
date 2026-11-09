@@ -2,12 +2,15 @@ package connector
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 
 	"go.mau.fi/util/ptr"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 )
@@ -90,7 +93,7 @@ func applyName(lock *sync.Mutex, ghost *bridgev2.Ghost, info *bridgev2.UserInfo)
 
 func renderedInfo(name string, named bool) *bridgev2.UserInfo {
 	ui := &bridgev2.UserInfo{Name: ptr.Ptr(name), Identifiers: []string{"tel:+10000000001"}}
-	holdBackUnnamed(ui, named)
+	holdBackUnnamed(ui, named, "+10000000001 (WA)")
 	return ui
 }
 
@@ -112,6 +115,8 @@ func TestHoldBackUnnamed(t *testing.T) {
 		{"an unnamed render names a new ghost", false, fallback, "", false, false, fallback, true},
 		{"an unnamed render retries a name whose push failed", false, fallback, realName, false, false, realName, true},
 		{"a failed retry stays unset", false, fallback, realName, false, true, realName, false},
+		{"a real render replaces a phone-number-only name", false, realName, fallback, true, false, realName, true},
+		{"a phone-number-only render never replaces a real name", false, fallback, realName, true, false, realName, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -168,13 +173,14 @@ func TestAltGhostInfo(t *testing.T) {
 		{"a nameless sync names a new twin", fallback, false, "", false, fallback, true, 1},
 		{"a nameless main ghost never blanks the twin", "", false, realName, true, realName, true, 0},
 		{"a nameless sync retries the twin's failed push", fallback, false, realName, false, realName, true, 1},
+		{"a real name replaces a twin showing only the phone number", realName, false, fallback, true, realName, true, 1},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			main := newTestGhost(tc.mainName, true)
 			main.AvatarID = "avatar"
 			twin := newTestGhost(tc.twinName, tc.twinSet)
-			info := altGhostInfo(main, tc.named)
+			info := altGhostInfo(makeInfoFromGhost(main), tc.named, fallback)
 			if info.Avatar == nil || info.Avatar.ID != "avatar" {
 				t.Errorf("the avatar is no longer synced: %+v", info.Avatar)
 			}
@@ -189,49 +195,138 @@ func TestAltGhostInfo(t *testing.T) {
 	}
 }
 
-func TestHoldBackContactEventName(t *testing.T) {
-	const oldName = "Old (WA)"
-	const realName = "Push (WA)"
+const (
+	staleName = "Stale (WA)"
+	oldName   = "Old (WA)"
+	newName   = "New (WA)"
+)
+
+var (
+	testPhoneJID = types.NewJID("10000000001", types.DefaultUserServer)
+	testLIDJID   = types.NewJID("20000000002", types.HiddenUserServer)
+)
+
+func nameTestConfig(t *testing.T) *Config {
+	t.Helper()
+	cfg := &Config{DisplaynameTemplate: defaultTemplate}
+	if err := cfg.PostProcess(); err != nil {
+		t.Fatalf("PostProcess() failed: %v", err)
+	}
+	return cfg
+}
+
+// A render that is not a name event, as contactToUserInfo makes it, never renames a named ghost
+// but still carries the avatar.
+func TestNonEventRenderKeepsName(t *testing.T) {
+	for _, reason := range []string{"picture event", "resync", "history sync", "contact event", "login"} {
+		t.Run(reason, func(t *testing.T) {
+			ghost := newTestGhost(oldName, true)
+			info := renderedInfo(staleName, false)
+			info.Avatar = &bridgev2.Avatar{ID: "avatar"}
+			applyName(&sync.Mutex{}, ghost, info)
+			if ghost.Name != oldName {
+				t.Errorf("ghost name = %q, want %q", ghost.Name, oldName)
+			}
+			if info.Avatar == nil || info.Avatar.ID != "avatar" {
+				t.Errorf("avatar dropped: %+v", info.Avatar)
+			}
+		})
+	}
+}
+
+func TestResyncNamesUnnamedGhost(t *testing.T) {
+	ghost := newTestGhost("", false)
+	applyName(&sync.Mutex{}, ghost, renderedInfo(newName, false))
+	if ghost.Name != newName || !ghost.NameSet {
+		t.Errorf("ghost name = %q (set %v), want %q (set)", ghost.Name, ghost.NameSet, newName)
+	}
+}
+
+func TestNameEventRenames(t *testing.T) {
+	cfg := nameTestConfig(t)
 	tests := []struct {
-		name        string
-		template    string
-		reason      string
-		wantRenames bool
+		name     string
+		ev       nameEvent
+		resolved types.ContactInfo
 	}{
-		{"contact event under a template without address book names", defaultTemplate, contactEventReason, false},
-		{"push name event still renames", defaultTemplate, "push name event", true},
-		{"business name event still renames", defaultTemplate, "business name event", true},
-		{"contact event under a template reading FullName", `{{or .PushName .FullName .Phone}} (WA)`, contactEventReason, true},
-		{"contact event under a template reading FirstName", `{{or .Short .Phone}}`, contactEventReason, true},
-		{"FullName read only behind a push name", `{{if .PushName}}{{.FullName}}{{end}} (WA)`, contactEventReason, true},
+		{"push name", pushNameEvent(&events.PushName{JID: testLIDJID, NewPushName: "New"}),
+			types.ContactInfo{PushName: "Stale"}},
+		{"business name", businessNameEvent(&events.BusinessName{JID: testLIDJID, NewBusinessName: "New"}),
+			types.ContactInfo{BusinessName: "Stale"}},
+		// resolveContact can overwrite the event's name with the alternate identity's stale one.
+		{"push name over a conflicting alternate", pushNameEvent(&events.PushName{JID: testLIDJID, NewPushName: "New"}),
+			types.ContactInfo{PushName: "Stale", FullName: "Stale"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := &Config{DisplaynameTemplate: tc.template}
-			if err := cfg.PostProcess(); err != nil {
-				t.Fatalf("PostProcess() failed: %v", err)
-			}
-			wantName := oldName
-			if tc.wantRenames {
-				wantName = realName
-			}
-			for _, ghost := range []*bridgev2.Ghost{newTestGhost(oldName, true), newTestGhost("", false)} {
-				info := renderedInfo(realName, true)
-				info.Avatar = &bridgev2.Avatar{ID: "avatar"}
-				cfg.holdBackContactEventName(tc.reason, info)
-				if len(info.Identifiers) != 1 || info.Avatar == nil {
-					t.Errorf("holding back the name dropped identifiers or avatar: %+v", info)
-				}
-				want := wantName
-				if ghost.Name == "" {
-					// A ghost first seen through a contact event still gets a name.
-					want = realName
-				}
-				applyName(&sync.Mutex{}, ghost, info)
-				if ghost.Name != want {
-					t.Errorf("ghost name = %q, want %q", ghost.Name, want)
-				}
+			ghost := newTestGhost(oldName, true)
+			info := renderedInfo(staleName, false)
+			cfg.applyNameEvent(info, testLIDJID, "+10000000001", tc.resolved, tc.ev)
+			applyName(&sync.Mutex{}, ghost, info)
+			if ghost.Name != newName {
+				t.Errorf("ghost name = %q, want %q", ghost.Name, newName)
 			}
 		})
+	}
+}
+
+func TestEmptyNameEventKeepsName(t *testing.T) {
+	cfg := nameTestConfig(t)
+	ghost := newTestGhost(oldName, true)
+	info := renderedInfo("+10000000001 (WA)", false)
+	cfg.applyNameEvent(info, testPhoneJID, "+10000000001", types.ContactInfo{PushName: "Stale"},
+		pushNameEvent(&events.PushName{JID: testPhoneJID}))
+	applyName(&sync.Mutex{}, ghost, info)
+	if ghost.Name != oldName {
+		t.Errorf("ghost name = %q, want %q", ghost.Name, oldName)
+	}
+}
+
+// An event on one form of a contact must reach the ghost of the other form.
+func TestNameEventJIDs(t *testing.T) {
+	tests := []struct {
+		name string
+		ev   nameEvent
+		want []types.JID
+	}{
+		{"push name on the phone JID", pushNameEvent(&events.PushName{JID: testPhoneJID, JIDAlt: testLIDJID}),
+			[]types.JID{testPhoneJID, testLIDJID}},
+		{"push name on the LID", pushNameEvent(&events.PushName{JID: testLIDJID, JIDAlt: testPhoneJID}),
+			[]types.JID{testLIDJID, testPhoneJID}},
+		{"push name without an alternate", pushNameEvent(&events.PushName{JID: testLIDJID}),
+			[]types.JID{testLIDJID}},
+		{"business name", businessNameEvent(&events.BusinessName{JID: testPhoneJID}),
+			[]types.JID{testPhoneJID}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if !slices.Equal(tc.ev.jids, tc.want) {
+				t.Errorf("jids = %v, want %v", tc.ev.jids, tc.want)
+			}
+		})
+	}
+}
+
+// The info handed to the twin must not follow later changes to the main ghost.
+func TestMakeInfoFromGhostIsSnapshot(t *testing.T) {
+	ghost := newTestGhost(oldName, true)
+	ghost.ExtraProfile = database.ExtraProfile{"k": json.RawMessage(`"v"`)}
+	info := makeInfoFromGhost(ghost)
+	ghost.Name = newName
+	ghost.ExtraProfile["k"] = json.RawMessage(`"changed"`)
+	if *info.Name != oldName || string(info.ExtraProfile["k"]) != `"v"` {
+		t.Errorf("snapshot changed with the ghost: %q %v", *info.Name, info.ExtraProfile)
+	}
+}
+
+// A LID migration copy must not replace the LID ghost's real name by a nameless render.
+func TestAltGhostInfoFromMigrationKeepsName(t *testing.T) {
+	cfg := nameTestConfig(t)
+	nameless := cfg.namelessName(testLIDJID, "+10000000001", types.ContactInfo{})
+	pn := newTestGhost("+10000000001 (WA)", true)
+	lid := newTestGhost(oldName, true)
+	applyName(&sync.Mutex{}, lid, altGhostInfo(makeInfoFromGhost(pn), false, nameless))
+	if lid.Name != oldName {
+		t.Errorf("LID ghost name = %q, want %q", lid.Name, oldName)
 	}
 }
