@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"regexp"
 	"strconv"
@@ -170,8 +171,7 @@ func (wa *WhatsAppClient) doGhostResync(ctx context.Context, queue map[types.JID
 			log.Err(err).Stringer("jid", jid).Msg("Failed to get user info for puppet in background sync")
 			continue
 		}
-		ghost.UpdateInfo(ctx, userInfo)
-		wa.syncAltGhostWithInfo(ctx, jid, ghost, userInfo)
+		wa.syncAltGhostWithInfo(ctx, jid, updateGhostInfo(ctx, ghost, userInfo), userInfo)
 	}
 }
 
@@ -284,7 +284,7 @@ func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, 
 		ui.ExtraUpdates = bridgev2.MergeExtraUpdaters(ui.ExtraUpdates, wa.fetchGhostAvatar)
 	}
 	// A named ghost keeps its name here; only nameEvent renames it.
-	holdBackUnnamed(ui, false)
+	holdBackUnnamed(ui, false, wa.Main.Config.namelessName(jid, phone, contact))
 	return ui
 }
 
@@ -442,15 +442,14 @@ func (wa *WhatsAppClient) resyncContacts(forceAvatarSync, automatic bool) {
 			log.Err(err).Stringer("jid", jid).Msg("Failed to get contact info")
 		} else {
 			userInfo := wa.contactToUserInfo(ctx, jid, contact, "", forceAvatarSync || ghost.AvatarID == "")
-			ghost.UpdateInfo(ctx, userInfo)
-			wa.syncAltGhostWithInfo(ctx, jid, ghost, userInfo)
+			wa.syncAltGhostWithInfo(ctx, jid, updateGhostInfo(ctx, ghost, userInfo), userInfo)
 		}
 	}
 }
 
-// syncAltGhostWithInfo copies mainGhost's info, just updated from applied, to its LID or phone
-// number twin.
-func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JID, mainGhost *bridgev2.Ghost, applied *bridgev2.UserInfo) {
+// syncAltGhostWithInfo copies main, a snapshot of the ghost just updated from applied, to its LID
+// or phone number twin.
+func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JID, main, applied *bridgev2.UserInfo) {
 	log := zerolog.Ctx(ctx)
 	var altJID types.JID
 	var err error
@@ -475,7 +474,8 @@ func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JI
 			Msg("Failed to get ghost for alternate JID")
 		return
 	}
-	ghost.UpdateInfo(ctx, altGhostInfo(mainGhost, applied.Name != nil))
+	nameless := wa.Main.Config.namelessName(altJID, phoneOf(jid, altJID), types.ContactInfo{})
+	ghost.UpdateInfo(ctx, altGhostInfo(main, applied.Name != nil, nameless))
 	log.Debug().
 		Stringer("jid", jid).
 		Stringer("alternate_jid", altJID).
@@ -483,17 +483,29 @@ func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JI
 	go wa.syncRemoteProfile(ctx, ghost)
 }
 
+// phoneOf is the phone number of whichever of the two JIDs is a phone number JID.
+func phoneOf(jid, altJID types.JID) string {
+	if jid.Server == types.DefaultUserServer {
+		return "+" + jid.User
+	} else if altJID.Server == types.DefaultUserServer {
+		return "+" + altJID.User
+	}
+	return ""
+}
+
+// makeInfoFromGhost copies the ghost's fields, so the result stays valid when the ghost changes.
 func makeInfoFromGhost(ghost *bridgev2.Ghost) *bridgev2.UserInfo {
+	name, isBot := ghost.Name, ghost.IsBot
 	return &bridgev2.UserInfo{
 		Identifiers: ghost.Identifiers,
-		Name:        &ghost.Name,
+		Name:        &name,
 		Avatar: &bridgev2.Avatar{
 			ID:     ghost.AvatarID,
 			Remove: ghost.AvatarID == "" || ghost.AvatarMXC == "",
 			MXC:    ghost.AvatarMXC,
 			Hash:   ghost.AvatarHash,
 		},
-		IsBot:        &ghost.IsBot,
-		ExtraProfile: ghost.ExtraProfile,
+		IsBot:        &isBot,
+		ExtraProfile: maps.Clone(ghost.ExtraProfile),
 	}
 }

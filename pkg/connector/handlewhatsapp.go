@@ -169,15 +169,9 @@ func (wa *WhatsAppClient) handleWAEvent(rawEvt any) (success bool) {
 	case *events.Contact:
 		go wa.syncGhost(evt.JID, "contact event", nil, nil)
 	case *events.PushName:
-		ev := pushNameEvent(evt)
-		for _, jid := range ev.jids {
-			go wa.syncGhost(jid, "push name event", nil, &ev)
-		}
+		go wa.syncNameEvent(pushNameEvent(evt), "push name event")
 	case *events.BusinessName:
-		ev := businessNameEvent(evt)
-		for _, jid := range ev.jids {
-			go wa.syncGhost(jid, "business name event", nil, &ev)
-		}
+		go wa.syncNameEvent(businessNameEvent(evt), "business name event")
 
 	case *events.Connected:
 		log.Debug().Msg("Connected to WhatsApp socket")
@@ -774,6 +768,13 @@ func (wa *WhatsAppClient) handleWAMarkChatAsRead(ctx context.Context, evt *event
 	}).Success
 }
 
+// syncNameEvent syncs the event's JIDs in order, so two quick renames cannot overtake each other.
+func (wa *WhatsAppClient) syncNameEvent(ev nameEvent, reason string) {
+	for _, jid := range ev.jids {
+		wa.syncGhost(jid, reason, nil, &ev)
+	}
+}
+
 // syncGhost updates a ghost from this login's contact store. Only a non-nil ev may rename a named ghost.
 func (wa *WhatsAppClient) syncGhost(jid types.JID, reason string, pictureID *string, ev *nameEvent) {
 	log := wa.UserLogin.Log.With().
@@ -800,9 +801,9 @@ func (wa *WhatsAppClient) syncGhost(jid types.JID, reason string, pictureID *str
 				log.Err(err).Msg("Failed to apply name event")
 			}
 		}
-		ghost.UpdateInfo(ctx, userInfo)
+		snapshot := updateGhostInfo(ctx, ghost, userInfo)
 		log.Debug().Msg("Synced ghost info")
-		wa.syncAltGhostWithInfo(ctx, jid, ghost, userInfo)
+		wa.syncAltGhostWithInfo(ctx, jid, snapshot, userInfo)
 	}
 	go wa.syncRemoteProfile(ctx, ghost)
 }
